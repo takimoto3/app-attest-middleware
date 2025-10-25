@@ -35,31 +35,28 @@ type StdLogger struct {
 	*log.Logger
 }
 
+// SetContext does nothing, same as original
 func (log *StdLogger) SetContext(ctx context.Context) {
-	// do nothing
+	// no-op
 }
 
+// Only change: do not call SetPrefix; add level in Printf instead
 func (log *StdLogger) Debugf(format string, args ...interface{}) {
-	log.Logger.SetPrefix("[Debug]")
-	log.Logger.Printf(format, args...)
+	log.Logger.Printf("[Debug] "+format, args...)
 }
 
 func (log *StdLogger) Infof(format string, args ...interface{}) {
-	log.Logger.SetPrefix("[Info]")
-	log.Logger.Printf(format, args...)
+	log.Logger.Printf("[Info] "+format, args...)
 }
 
 func (log *StdLogger) Warningf(format string, args ...interface{}) {
-	log.Logger.SetPrefix("[Warning]")
-	log.Logger.Printf(format, args...)
+	log.Logger.Printf("[Warning] "+format, args...)
 }
 
 func (log *StdLogger) Errorf(format string, args ...interface{}) {
-	log.Logger.SetPrefix("[Error]")
-	log.Logger.Printf(format, args...)
+	log.Logger.Printf("[Error] "+format, args...)
 }
 
 func (log *StdLogger) Criticalf(format string, args ...interface{}) {
-	log.Logger.SetPrefix("[Critical]")
-	log.Logger.Printf(format, args...)
+	log.Logger.Printf("[Critical] "+format, args...)
 }

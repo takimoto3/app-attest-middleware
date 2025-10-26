@@ -61,41 +61,38 @@ Once you have a structure that implements the above plugin interface, use it as 
 
 ```go
 func main() {
+    // Note: MyAttestationPlugin and MyAssertionPlugin must be implemented by the user.
+    attestationPlugin := &MyAttestationPlugin{}
+    assertionPlugin := &MyAssertionPlugin{}
+
     attestHandler := handler.AttestationHandler{
-		Logger: &logger.StdLogger{},
+		Logger: &logger.StdLogger{Logger: log.New(os.Stdout, "", 0)},
 		AttestationService: &attest.AttestationService{
-			AppID:         "<TEAM ID>.<Bundle ID>", // AppID
-			PathForRootCA: "certs/Apple_App_Attestation_Root_CA.pem",
+			AppID:         "<TEAM ID>.<Bundle ID>",
+			PathForRootCA: "certs/Apple_App_Attestation_Root_CA.pem", 
 		},
-		AttestationPlugin: &MyAttestationPlugin{}, // Your attestation Plugin
+		AttestationPlugin: attestationPlugin,
     }
 
-    assert := middleware.AppAttestAssert (
-        &logger.StdLogger{},
-        "<TEAM ID>.<Bundle ID>", // AppID
-        &MyAssertPlugin{....},  // Your assert Plugin
+    assertionMiddleware := middleware.NewMiddleware(
+        &logger.StdLogger{Logger: log.New(os.Stdout, "", 0)},
+        "<TEAM ID>.<Bundle ID>",
+        assertionPlugin,
     )
 
-    http.HandleFunc("/attest/", attestHandler.NewChallenge)
-    http.HandleFunc("/attest/add", attestHandler.VerifyAttestation)
-    http.HandleFunc("/hello", assert(Hello))
+    helloHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Hello, World!"))
+	})
 
-    err := http.ListenAndServe("0.0.0.0:3000", nil)
+    http.HandleFunc("/attest/challenge", attestHandler.NewChallenge)
+    http.HandleFunc("/attest/verify", attestHandler.VerifyAttestation)
+    http.Handle("/hello", assertionMiddleware.AttestAssertWith(helloHandler))
+
+    log.Println("Listening on :8080...")
+    log.Fatal(http.ListenAndServe(":8080", nil))
 }
-
-func Hello(w http.ResponseWriter, r *http.Request) {}
 ```
 
-### Testing
-
-To run the test, you need to prepare the test data(JSON). For information on how to create test data, see Testing in the [App-Attest](https://github.com/takimoto3/app-attest) package.
-
- * testdata/attestation.json
-
-
-### Sample
-
-Please refer to the sample web application that uses this package [here](https://github.com/takimoto3/app-attest-sample).
 
 ## License
 

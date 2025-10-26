@@ -35,13 +35,13 @@ func AppAttestAssert(logger logger.Logger, appID string, plugin AssertionPlugin)
 				plugin.RedirectToAttestation(w, r)
 				return
 			}
-			assginedChallenge, err := plugin.GetAssignedChallenge(r)
+			assignedChallenge, err := plugin.GetAssignedChallenge(r)
 			if err != nil {
 				logger.Errorf("%s", err)
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			if assginedChallenge == "" {
+			if assignedChallenge == "" {
 				if err := plugin.ResponseNewChallenge(w, r); err != nil {
 					logger.Errorf("%s", err)
 					w.WriteHeader(http.StatusInternalServerError)
@@ -50,7 +50,7 @@ func AppAttestAssert(logger logger.Logger, appID string, plugin AssertionPlugin)
 			}
 			service := attest.AssertionService{
 				AppID:     appID,
-				Challenge: assginedChallenge,
+				Challenge: assignedChallenge,
 				PublicKey: pubkey,
 				Counter:   counter,
 			}

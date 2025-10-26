@@ -28,21 +28,21 @@ func (h *AttestationHandler) NewChallenge(w http.ResponseWriter, r *http.Request
 
 func (h *AttestationHandler) VerifyAttestation(w http.ResponseWriter, r *http.Request) {
 	h.Logger.SetContext(r.Context())
-	r, attestObj, clientDataHash, keyID, err := h.ParseRequest(r)
+	req, attestObj, clientDataHash, keyID, err := h.ParseRequest(r)
 	if err != nil {
 		h.Logger.Errorf("%s", err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	assginedChallenge, err := h.GetAssignedChallenge(r)
+	assignedChallenge, err := h.GetAssignedChallenge(req)
 	if err != nil {
 		h.Logger.Errorf("%s", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	if assginedChallenge == "" {
-		if err = h.ResponseNewChallenge(w, r); err != nil {
+	if assignedChallenge == "" {
+		if err = h.ResponseNewChallenge(w, req); err != nil {
 			h.Logger.Errorf("%s", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -57,7 +57,7 @@ func (h *AttestationHandler) VerifyAttestation(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if err = h.StoreResult(r, result); err != nil {
+	if err = h.StoreResult(req, result); err != nil {
 		h.Logger.Errorf("%s", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return

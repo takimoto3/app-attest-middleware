@@ -15,9 +15,14 @@ func AppAttestAssert(logger logger.Logger, appID string, plugin AssertionPlugin)
 			logger.SetContext(r.Context())
 			var requestBody []byte
 			if r.Body != nil {
-				requestBody, _ = ioutil.ReadAll(r.Body)
+				requestBody, err := ioutil.ReadAll(r.Body)
+				if err != nil {
+					logger.Errorf("failed to read body: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
 				r.Body.Close()
-				defer func() { r.Body = ioutil.NopCloser(bytes.NewBuffer(requestBody)) }()
+				r.Body = ioutil.NopCloser(bytes.NewBuffer(requestBody))
 			}
 			r, assertion, challenge, err := plugin.ParseRequest(r, requestBody)
 			if err != nil {
@@ -32,16 +37,18 @@ func AppAttestAssert(logger logger.Logger, appID string, plugin AssertionPlugin)
 				return
 			}
 			if pubkey == nil {
+				// User has not completed Attestation yet
+				// → redirect client to attestation flow
 				plugin.RedirectToAttestation(w, r)
 				return
 			}
-			assginedChallenge, err := plugin.GetAssignedChallenge(r)
+			assignedChallenge, err := plugin.GetAssignedChallenge(r)
 			if err != nil {
 				logger.Errorf("%s", err)
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			if assginedChallenge == "" {
+			if assignedChallenge == "" {
 				if err := plugin.ResponseNewChallenge(w, r); err != nil {
 					logger.Errorf("%s", err)
 					w.WriteHeader(http.StatusInternalServerError)
@@ -50,7 +57,7 @@ func AppAttestAssert(logger logger.Logger, appID string, plugin AssertionPlugin)
 			}
 			service := attest.AssertionService{
 				AppID:     appID,
-				Challenge: assginedChallenge,
+				Challenge: assignedChallenge,
 				PublicKey: pubkey,
 				Counter:   counter,
 			}

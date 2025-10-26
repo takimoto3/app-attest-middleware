@@ -20,3 +20,8 @@ jobs:
 
     - name: Build
       run: go build -v ./...
+
+    - name: Test passing packages
+      run: |
+        go test -v github.com/takimoto3/app-attest-middleware/logger
+        go test -v github.com/takimoto3/app-attest-middleware/handler

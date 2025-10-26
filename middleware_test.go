@@ -248,7 +248,8 @@ func TestAssertionMiddleware_FullCoverage(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 
-			mw.Handler(next).ServeHTTP(w, req)
+			h := mw.AttestAssertWith(next)
+			h.ServeHTTP(w, req)
 			res := w.Result()
 
 			if res.StatusCode != tt.wantCode {

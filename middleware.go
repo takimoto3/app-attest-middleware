@@ -10,20 +10,25 @@ import (
 	"github.com/takimoto3/app-attest-middleware/logger"
 )
 
+// AssertionServiceProvider creates a new AssertionService for verifying an assertion.
 type AssertionServiceProvider func(challenge string, pubkey *ecdsa.PublicKey, counter uint32) AssertionService
 
+// AssertionService defines the interface for verifying an assertion object.
 type AssertionService interface {
 	Verify(assertObject *attest.AssertionObject, challenge string, clientData []byte) (uint32, error)
 }
 
+// AssertionMiddleware handles App Attest assertion verification in HTTP request flow.
 type AssertionMiddleware struct {
 	logger logger.Logger
 	appID  string
 	plugin AssertionPlugin
 
+	// Factory function for creating an AssertionService used to verify assertions.
 	NewService AssertionServiceProvider
 }
 
+// NewMiddleware creates a new AssertionMiddleware bound to the given appID and plugin.
 func NewMiddleware(logger logger.Logger, appID string, plugin AssertionPlugin) *AssertionMiddleware {
 	return &AssertionMiddleware{
 		logger: logger,
@@ -40,12 +45,14 @@ func NewMiddleware(logger logger.Logger, appID string, plugin AssertionPlugin) *
 	}
 }
 
-func (m *AssertionMiddleware) Handler(next http.Handler) http.Handler {
+// AttestAssertWith wraps an HTTP handler with assertion verification logic.
+func (m *AssertionMiddleware) AttestAssertWith(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.logger.SetContext(r.Context())
 		var err error
 		var requestBody []byte
 		if r.Body != nil {
+			// Read and preserve request body since it may be parsed multiple times downstream.
 			requestBody, err = ioutil.ReadAll(r.Body)
 			if err != nil {
 				m.logger.Errorf("failed to read body: %v", err)

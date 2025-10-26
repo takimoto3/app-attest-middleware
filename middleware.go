@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"io/ioutil"
 	"net/http"
 
@@ -9,72 +10,96 @@ import (
 	"github.com/takimoto3/app-attest-middleware/logger"
 )
 
-func AppAttestAssert(logger logger.Logger, appID string, plugin AssertionPlugin) func(next http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			logger.SetContext(r.Context())
-			var requestBody []byte
-			if r.Body != nil {
-				requestBody, err := ioutil.ReadAll(r.Body)
-				if err != nil {
-					logger.Errorf("failed to read body: %v", err)
-					w.WriteHeader(http.StatusBadRequest)
-					return
-				}
-				r.Body.Close()
-				r.Body = ioutil.NopCloser(bytes.NewBuffer(requestBody))
-			}
-			r, assertion, challenge, err := plugin.ParseRequest(r, requestBody)
-			if err != nil {
-				logger.Errorf("%s", err)
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			pubkey, counter, err := plugin.GetPublicKeyAndCounter(r)
-			if err != nil {
-				logger.Errorf("%s", err)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			if pubkey == nil {
-				// User has not completed Attestation yet
-				// → redirect client to attestation flow
-				plugin.RedirectToAttestation(w, r)
-				return
-			}
-			assignedChallenge, err := plugin.GetAssignedChallenge(r)
-			if err != nil {
-				logger.Errorf("%s", err)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			if assignedChallenge == "" {
-				if err := plugin.ResponseNewChallenge(w, r); err != nil {
-					logger.Errorf("%s", err)
-					w.WriteHeader(http.StatusInternalServerError)
-				}
-				return
-			}
-			service := attest.AssertionService{
+type AssertionServiceProvider func(challenge string, pubkey *ecdsa.PublicKey, counter uint32) AssertionService
+
+type AssertionService interface {
+	Verify(assertObject *attest.AssertionObject, challenge string, clientData []byte) (uint32, error)
+}
+
+type AssertionMiddleware struct {
+	logger logger.Logger
+	appID  string
+	plugin AssertionPlugin
+
+	NewService AssertionServiceProvider
+}
+
+func NewMiddleware(logger logger.Logger, appID string, plugin AssertionPlugin) *AssertionMiddleware {
+	return &AssertionMiddleware{
+		logger: logger,
+		appID:  appID,
+		plugin: plugin,
+		NewService: func(challenge string, pubkey *ecdsa.PublicKey, counter uint32) AssertionService {
+			return &attest.AssertionService{
 				AppID:     appID,
-				Challenge: assignedChallenge,
 				PublicKey: pubkey,
+				Challenge: challenge,
 				Counter:   counter,
 			}
-			cnt, err := service.Verify(assertion, challenge, requestBody)
+		},
+	}
+}
+
+func (m *AssertionMiddleware) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.logger.SetContext(r.Context())
+		var err error
+		var requestBody []byte
+		if r.Body != nil {
+			requestBody, err = ioutil.ReadAll(r.Body)
 			if err != nil {
-				logger.Errorf("%s", err)
+				m.logger.Errorf("failed to read body: %v", err)
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-
-			if err = plugin.StoreNewCounter(r, cnt); err != nil {
-				logger.Errorf("%s", err)
+			r.Body.Close()
+			r.Body = ioutil.NopCloser(bytes.NewBuffer(requestBody))
+		}
+		r, assertion, challenge, err := m.plugin.ParseRequest(r, requestBody)
+		if err != nil {
+			m.logger.Errorf("%s", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		pubkey, counter, err := m.plugin.GetPublicKeyAndCounter(r)
+		if err != nil {
+			m.logger.Errorf("%s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if pubkey == nil {
+			// User has not completed Attestation yet
+			// → redirect client to attestation flow
+			m.plugin.RedirectToAttestation(w, r)
+			return
+		}
+		assignedChallenge, err := m.plugin.GetAssignedChallenge(r)
+		if err != nil {
+			m.logger.Errorf("%s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if assignedChallenge == "" {
+			if err := m.plugin.ResponseNewChallenge(w, r); err != nil {
+				m.logger.Errorf("%s", err)
 				w.WriteHeader(http.StatusInternalServerError)
-				return
 			}
+			return
+		}
+		service := m.NewService(assignedChallenge, pubkey, counter)
+		cnt, err := service.Verify(assertion, challenge, requestBody)
+		if err != nil {
+			m.logger.Errorf("%s", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 
-			next.ServeHTTP(w, r)
-		})
-	}
+		if err = m.plugin.StoreNewCounter(r, cnt); err != nil {
+			m.logger.Errorf("%s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }

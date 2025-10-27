@@ -1,5 +1,5 @@
 # App-Attest-Middleware
-![](https://img.shields.io/badge/go-%3E%3D%201.11-blue)
+![](https://img.shields.io/badge/go-%3E%3D%201.16-blue)
 
 Golang's HTTP middleware package that handles assertions and assertion requests for Apple apps and supports server-side validation.
 

@@ -7,7 +7,7 @@ Golang's HTTP middleware package that handles assertions and assertion requests 
 
 ## System Requirements
 
-* Go 1.11 (or newer)
+* Go 1.16 (or newer)
 
 
 ## Installation

@@ -1,6 +1,6 @@
 module github.com/takimoto3/app-attest-middleware
 
-go 1.11
+go 1.16
 
 require (
 	github.com/takimoto3/app-attest v0.0.0-20220805182029-325e905f0e86

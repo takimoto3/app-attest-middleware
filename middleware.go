@@ -3,7 +3,7 @@ package middleware
 import (
 	"bytes"
 	"crypto/ecdsa"
-	"io/ioutil"
+	"io"
 	"net/http"
 
 	attest "github.com/takimoto3/app-attest"
@@ -53,14 +53,14 @@ func (m *AssertionMiddleware) AttestAssertWith(next http.HandlerFunc) http.Handl
 		var requestBody []byte
 		if r.Body != nil {
 			// Read and preserve request body since it may be parsed multiple times downstream.
-			requestBody, err = ioutil.ReadAll(r.Body)
+			requestBody, err = io.ReadAll(r.Body)
 			if err != nil {
 				m.logger.Errorf("failed to read body: %v", err)
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
 			r.Body.Close()
-			r.Body = ioutil.NopCloser(bytes.NewBuffer(requestBody))
+			r.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 		}
 		r, assertion, challenge, err := m.plugin.ParseRequest(r, requestBody)
 		if err != nil {

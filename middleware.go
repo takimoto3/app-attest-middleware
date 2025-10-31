@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"io"
+	"log/slog"
 	"net/http"
 
 	attest "github.com/takimoto3/app-attest"
-	"github.com/takimoto3/app-attest-middleware/logger"
 )
 
 // AssertionServiceProvider creates a new AssertionService for verifying an assertion.
@@ -20,7 +20,7 @@ type AssertionService interface {
 
 // AssertionMiddleware handles App Attest assertion verification in HTTP request flow.
 type AssertionMiddleware struct {
-	logger logger.Logger
+	logger *slog.Logger
 	appID  string
 	plugin AssertionPlugin
 
@@ -29,7 +29,7 @@ type AssertionMiddleware struct {
 }
 
 // NewMiddleware creates a new AssertionMiddleware bound to the given appID and plugin.
-func NewMiddleware(logger logger.Logger, appID string, plugin AssertionPlugin) *AssertionMiddleware {
+func NewMiddleware(logger *slog.Logger, appID string, plugin AssertionPlugin) *AssertionMiddleware {
 	return &AssertionMiddleware{
 		logger: logger,
 		appID:  appID,
@@ -48,14 +48,13 @@ func NewMiddleware(logger logger.Logger, appID string, plugin AssertionPlugin) *
 // AttestAssertWith wraps an HTTP handler with assertion verification logic.
 func (m *AssertionMiddleware) AttestAssertWith(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		m.logger.SetContext(r.Context())
 		var err error
 		var requestBody []byte
 		if r.Body != nil {
 			// Read and preserve request body since it may be parsed multiple times downstream.
 			requestBody, err = io.ReadAll(r.Body)
 			if err != nil {
-				m.logger.Errorf("failed to read body: %v", err)
+				m.logger.Error("failed to read body", "err", err)
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
@@ -64,13 +63,13 @@ func (m *AssertionMiddleware) AttestAssertWith(next http.HandlerFunc) http.Handl
 		}
 		r, assertion, challenge, err := m.plugin.ParseRequest(r, requestBody)
 		if err != nil {
-			m.logger.Errorf("%s", err)
+			m.logger.Error("failed to parse request", "err", err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		pubkey, counter, err := m.plugin.GetPublicKeyAndCounter(r)
 		if err != nil {
-			m.logger.Errorf("%s", err)
+			m.logger.Error("failed to get public key and counter", "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -82,13 +81,13 @@ func (m *AssertionMiddleware) AttestAssertWith(next http.HandlerFunc) http.Handl
 		}
 		assignedChallenge, err := m.plugin.GetAssignedChallenge(r)
 		if err != nil {
-			m.logger.Errorf("%s", err)
+			m.logger.Error("failed to get assigned challenge", "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		if assignedChallenge == "" {
 			if err := m.plugin.ResponseNewChallenge(w, r); err != nil {
-				m.logger.Errorf("%s", err)
+				m.logger.Error("failed to response new challenge", "err", err)
 				w.WriteHeader(http.StatusInternalServerError)
 			}
 			return
@@ -96,13 +95,13 @@ func (m *AssertionMiddleware) AttestAssertWith(next http.HandlerFunc) http.Handl
 		service := m.NewService(assignedChallenge, pubkey, counter)
 		cnt, err := service.Verify(assertion, challenge, requestBody)
 		if err != nil {
-			m.logger.Errorf("%s", err)
+			m.logger.Error("failed to verify assertion", "err", err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 
 		if err = m.plugin.StoreNewCounter(r, cnt); err != nil {
-			m.logger.Errorf("%s", err)
+			m.logger.Error("failed to store new counter", "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}

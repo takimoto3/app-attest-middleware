@@ -2,7 +2,7 @@ package handler_test
 
 import (
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,7 +10,6 @@ import (
 
 	attest "github.com/takimoto3/app-attest"
 	"github.com/takimoto3/app-attest-middleware/handler"
-	"github.com/takimoto3/app-attest-middleware/logger"
 )
 
 var _ handler.AttestationService = (*MockAttestationService)(nil)
@@ -61,7 +60,7 @@ func TestAttestationHandler_NewChallenge(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			target := handler.AttestationHandler{
-				Logger:            &logger.StdLogger{Logger: log.New(os.Stdout, "", log.LstdFlags)},
+				Logger:            slog.New(slog.NewTextHandler(os.Stdout, nil)),
 				AttestationPlugin: &MockAttestationPlugin{Func_ResponseNewChallenge: tt.ResponseNewChallenge},
 			}
 
@@ -170,7 +169,7 @@ func TestAttestationHandler_VerifyAttestation(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			target := handler.AttestationHandler{
-				Logger: &logger.StdLogger{Logger: log.New(os.Stdout, "", log.LstdFlags)},
+				Logger: slog.New(slog.NewTextHandler(os.Stdout, nil)),
 				AttestationPlugin: &MockAttestationPlugin{
 					Func_ParseRequest: func(r *http.Request) (*http.Request, *attest.AttestationObject, []byte, []byte, error) {
 						attestObj, clientDataHash, keyID, err := tt.ParseRequest(r)

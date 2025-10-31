@@ -7,8 +7,8 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"errors"
-	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,39 +25,6 @@ func (e *errReader) Read(p []byte) (int, error) {
 
 func (e *errReader) Close() error {
 	return nil
-}
-
-type mockLogger struct {
-	errors    []string
-	infos     []string
-	debugs    []string
-	criticals []string
-	warnings  []string
-	context   interface{}
-}
-
-func (m *mockLogger) SetContext(ctx context.Context) {
-	m.context = ctx
-}
-
-func (m *mockLogger) Errorf(format string, args ...interface{}) {
-	m.errors = append(m.errors, fmt.Sprintf(format, args...))
-}
-
-func (m *mockLogger) Infof(format string, args ...interface{}) {
-	m.infos = append(m.infos, fmt.Sprintf(format, args...))
-}
-
-func (m *mockLogger) Debugf(format string, args ...interface{}) {
-	m.debugs = append(m.debugs, fmt.Sprintf(format, args...))
-}
-
-func (m *mockLogger) Criticalf(format string, args ...interface{}) {
-	m.criticals = append(m.criticals, fmt.Sprintf(format, args...))
-}
-
-func (m *mockLogger) Warningf(format string, args ...interface{}) {
-	m.warnings = append(m.warnings, fmt.Sprintf(format, args...))
 }
 
 type MockPlugin struct {
@@ -105,6 +72,18 @@ type MockAssertionService struct {
 func (m *MockAssertionService) Verify(_ *attest.AssertionObject, _ string, _ []byte) (uint32, error) {
 	m.Called = true
 	return m.ReturnCount, m.ReturnErr
+}
+
+type testHandler struct {
+	slog.Handler
+	errored bool
+}
+
+func (h *testHandler) Handle(ctx context.Context, r slog.Record) error {
+	if r.Level == slog.LevelError {
+		h.errored = true
+	}
+	return h.Handler.Handle(ctx, r)
 }
 
 func TestAssertionMiddleware_FullCoverage(t *testing.T) {
@@ -233,7 +212,8 @@ func TestAssertionMiddleware_FullCoverage(t *testing.T) {
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			logger := &mockLogger{}
+			handler := &testHandler{Handler: slog.NewTextHandler(io.Discard, nil)}
+			logger := slog.New(handler)
 			mw := middleware.NewMiddleware(logger, "com.example.app", tt.plugin)
 			mw.NewService = func(ch string, pk *ecdsa.PublicKey, c uint32) middleware.AssertionService {
 				return tt.service
@@ -260,7 +240,7 @@ func TestAssertionMiddleware_FullCoverage(t *testing.T) {
 				t.Errorf("[%s] next handler called: got %v, want %v", name, calledNext, tt.expectNext)
 			}
 
-			if tt.expectErrorLog && len(logger.errors) == 0 {
+			if tt.expectErrorLog && !handler.errored {
 				t.Errorf("[%s] expected error log but got none", name)
 			}
 		})

@@ -1,5 +1,9 @@
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
+github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/sony/sonyflake/v2 v2.2.0 h1:wSzEoewlWnUtc3SZX/MpT8zsWTuAnjwrprUYfuPl9Jg=
+github.com/sony/sonyflake/v2 v2.2.0/go.mod h1:09EcfmR846JLupbkgVfzp8QtQwJ+Y8e69VVayHdawzg=
 github.com/takimoto3/app-attest v1.0.0 h1:j1fpAxzC9eDIl6yTuGtcwbAF4OoRkSXirV2CzwKm6GE=
 github.com/takimoto3/app-attest v1.0.0/go.mod h1:0rlBfZ9wSzON6o9J5UP+H/eY+Kq1JQyvdqE1I4hHUbc=
 github.com/tenntenn/testtime v0.3.2 h1:uF2DQUMXTYD5+x9I4KA3y0KrBUzzdW2B8YKVFg+boi0=

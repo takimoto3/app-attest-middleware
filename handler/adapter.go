@@ -53,7 +53,7 @@ func (a *AttestationAdapter) NewChallenge(ctx context.Context, r *Request) (stri
 	logger := a.logger.With("request_id", requestID)
 	logger.Debug("requesting new challenge")
 
-	challenge, err := a.plugin.NewChallenge(r)
+	challenge, err := a.plugin.NewChallenge(ctx, r)
 	if err != nil {
 		logger.Error(" failed to generate new challenge", "err", err)
 		return "", fmt.Errorf("%w: failed to generate new challenge: %v", ErrInternal, err)
@@ -68,14 +68,14 @@ func (a *AttestationAdapter) Verify(ctx context.Context, r *Request) error {
 	logger.Debug("starting attestation verification")
 
 	// Extract attestation data from plugin
-	attestObj, clientDataHash, keyID, err := a.plugin.ExtractData(r)
+	attestObj, clientDataHash, keyID, err := a.plugin.ExtractData(ctx, r)
 	if err != nil {
 		logger.Error("failed to parse request", "err", err)
 		return fmt.Errorf("%w: failed to parse request: %v", ErrBadRequest, err)
 	}
 
 	// Check if challenge was assigned
-	assigned, err := a.plugin.IsChallengeAssigned(r)
+	assigned, err := a.plugin.IsChallengeAssigned(ctx, r)
 	if err != nil {
 		logger.Error("failed to check challenge assignment", "err", err)
 		return fmt.Errorf("%w: failed to check challenge: %v", ErrInternal, err)
@@ -95,7 +95,7 @@ func (a *AttestationAdapter) Verify(ctx context.Context, r *Request) error {
 	logger.Debug("attestation verified successfully", "keyID", string(keyID))
 
 	// Store verification result via plugin
-	if err := a.plugin.StoreResult(r); err != nil {
+	if err := a.plugin.StoreResult(ctx, r); err != nil {
 		logger.Error("failed to store attestation result", "err", err)
 		return fmt.Errorf("%w: failed to store result: %v", ErrInternal, err)
 	}

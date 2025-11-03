@@ -1,194 +1,100 @@
 package handler_test
 
 import (
+	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
-	attest "github.com/takimoto3/app-attest"
+	"github.com/sony/sonyflake/v2"
 	"github.com/takimoto3/app-attest-middleware/handler"
+	"github.com/takimoto3/app-attest-middleware/requestid"
 )
 
-var _ handler.AttestationService = (*MockAttestationService)(nil)
+var _ handler.Adapter = &mockAdapter{}
 
-type MockAttestationService struct {
-	Func_Verify func(*attest.AttestationObject, []byte, []byte) (*attest.Result, error)
+// Mock adapter to simulate Verify / NewChallenge behavior
+type mockAdapter struct {
+	verifyFunc       func() error
+	newChallengeFunc func() (string, error)
 }
 
-func (s *MockAttestationService) Verify(attestObj *attest.AttestationObject, clientDataHash, keyID []byte) (*attest.Result, error) {
-	return s.Func_Verify(attestObj, clientDataHash, keyID)
+func (m *mockAdapter) Verify(ctx context.Context, _ *handler.Request) error {
+	return m.verifyFunc()
 }
 
-var _ handler.AttestationPlugin = (*MockAttestationPlugin)(nil)
-
-type MockAttestationPlugin struct {
-	Func_GetAssignedChallenge func(*http.Request) (string, error)
-	Func_ResponseNewChallenge func(http.ResponseWriter, *http.Request) error
-	Func_ParseRequest         func(*http.Request) (*http.Request, *attest.AttestationObject, []byte, []byte, error)
-	Func_StoreResult          func(*http.Request, *attest.Result) error
+func (m *mockAdapter) NewChallenge(ctx context.Context, _ *handler.Request) (string, error) {
+	return m.newChallengeFunc()
 }
 
-func (plugin *MockAttestationPlugin) GetAssignedChallenge(r *http.Request) (string, error) {
-	return plugin.Func_GetAssignedChallenge(r)
-}
-
-func (plugin *MockAttestationPlugin) ResponseNewChallenge(w http.ResponseWriter, r *http.Request) error {
-	return plugin.Func_ResponseNewChallenge(w, r)
-}
-func (plugin *MockAttestationPlugin) ParseRequest(r *http.Request) (*http.Request, *attest.AttestationObject, []byte, []byte, error) {
-	return plugin.Func_ParseRequest(r)
-}
-
-func (plugin *MockAttestationPlugin) StoreResult(r *http.Request, result *attest.Result) error {
-	return plugin.Func_StoreResult(r, result)
-}
-
-func TestAttestationHandler_NewChallenge(t *testing.T) {
-	tests := map[string]struct {
-		ResponseNewChallenge func(w http.ResponseWriter, r *http.Request) error
-		wantStatusCode       int
+func TestVerifyHandler(t *testing.T) {
+	requestid.UseSnowFlake(sonyflake.Settings{})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cases := map[string]struct {
+		verifyErr       error
+		newChallengeStr string
+		newChallengeErr error
+		wantStatus      int
+		wantBody        string
 	}{
-		"error case(func ResponseNewChallenge return error)": {
-			func(w http.ResponseWriter, r *http.Request) error { return errors.New("response new challenge error") },
-			http.StatusInternalServerError,
+		"verify_success": {
+			verifyErr:  nil,
+			wantStatus: http.StatusOK,
+			wantBody:   "",
+		},
+		"verify_failure": {
+			verifyErr:  handler.ErrBadRequest,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "Bad Request\n",
+		},
+		"triggers_new_challenge_success": {
+			verifyErr:       handler.ErrNewChallenge,
+			newChallengeStr: "challenge123",
+			newChallengeErr: nil,
+			wantStatus:      http.StatusOK,
+			wantBody:        "challenge123",
+		},
+		"triggers_new_challenge_failure": {
+			verifyErr:       handler.ErrNewChallenge,
+			newChallengeStr: "",
+			newChallengeErr: handler.ErrBadRequest,
+			wantStatus:      http.StatusBadRequest,
+			wantBody:        "Bad Request\n",
+		},
+		"new_challenge_failed_internal": {
+			verifyErr:       handler.ErrNewChallenge,
+			newChallengeStr: "",
+			newChallengeErr: errors.New("some internal error"),
+			wantStatus:      http.StatusInternalServerError,
+			wantBody:        "Internal Server Error\n",
 		},
 	}
 
-	for name, tt := range tests {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			target := handler.AttestationHandler{
-				Logger:            slog.New(slog.NewTextHandler(os.Stdout, nil)),
-				AttestationPlugin: &MockAttestationPlugin{Func_ResponseNewChallenge: tt.ResponseNewChallenge},
-			}
-
-			r := httptest.NewRequest(http.MethodGet, "/attest/", nil)
-			w := httptest.NewRecorder()
-
-			target.NewChallenge(w, r)
-
-			if w.Result().StatusCode != tt.wantStatusCode {
-				t.Errorf("invalid status code return: %d, want: %d", w.Result().StatusCode, tt.wantStatusCode)
-			}
-		})
-	}
-}
-
-func TestAttestationHandler_VerifyAttestation(t *testing.T) {
-	tests := map[string]struct {
-		ParseRequest         func(*http.Request) (*attest.AttestationObject, []byte, []byte, error)
-		GetAssignedChallenge func(*http.Request) (string, error)
-		ResponseNewChallenge func(http.ResponseWriter, *http.Request) error
-		Verify               func(*attest.AttestationObject, []byte, []byte) (*attest.Result, error)
-		StoreResult          func(*http.Request, *attest.Result) error
-		wantStatusCode       int
-	}{
-		"error case(func ParseRequest return error)": {
-			func(r *http.Request) (*attest.AttestationObject, []byte, []byte, error) {
-				return nil, nil, nil, errors.New("parse request error")
-			},
-			nil,
-			nil,
-			nil,
-			nil,
-			http.StatusBadRequest,
-		},
-		"error case(func GetAssignedChallenge return error)": {
-			func(r *http.Request) (*attest.AttestationObject, []byte, []byte, error) {
-				return &attest.AttestationObject{}, []byte("clientHash"), []byte("keyID"), nil
-			},
-			func(r *http.Request) (string, error) { return "", errors.New("get assigned challenge error") },
-			nil,
-			nil,
-			nil,
-			http.StatusInternalServerError,
-		},
-		"error case(func ResponseNewChallenge return error)": {
-			func(r *http.Request) (*attest.AttestationObject, []byte, []byte, error) {
-				return &attest.AttestationObject{}, []byte("clientHash"), []byte("keyID"), nil
-			},
-			func(r *http.Request) (string, error) { return "", nil },
-			func(rw http.ResponseWriter, r *http.Request) error { return errors.New("reponse new challenge error") },
-			nil,
-			nil,
-			http.StatusInternalServerError,
-		},
-		"success case(response new challenge)": {
-			func(r *http.Request) (*attest.AttestationObject, []byte, []byte, error) {
-				return &attest.AttestationObject{}, []byte("clientHash"), []byte("keyID"), nil
-			},
-			func(r *http.Request) (string, error) { return "", nil },
-			func(w http.ResponseWriter, _ *http.Request) error {
-				w.WriteHeader(http.StatusSeeOther)
-				return nil
-			},
-			nil,
-			nil,
-			http.StatusSeeOther,
-		},
-		"error case(func Verify return error)": {
-			func(r *http.Request) (*attest.AttestationObject, []byte, []byte, error) {
-				return &attest.AttestationObject{}, []byte("clientHash"), []byte("keyID"), nil
-			},
-			func(r *http.Request) (string, error) { return "assigned challenge", nil },
-			nil,
-			func(ao *attest.AttestationObject, clientDataHash, keyID []byte) (*attest.Result, error) {
-				return nil, errors.New("attestation verify error")
-			},
-			nil,
-			http.StatusBadRequest,
-		},
-		"error case(func StoreResult return error)": {
-			func(r *http.Request) (*attest.AttestationObject, []byte, []byte, error) {
-				return &attest.AttestationObject{}, []byte("clientHash"), []byte("keyID"), nil
-			},
-			func(r *http.Request) (string, error) { return "assigned challenge", nil },
-			nil,
-			func(ao *attest.AttestationObject, clientDataHash, keyID []byte) (*attest.Result, error) {
-				return &attest.Result{}, nil
-			},
-			func(r *http.Request, result *attest.Result) error { return errors.New("store result error") },
-			http.StatusInternalServerError,
-		},
-		"success case": {
-			func(r *http.Request) (*attest.AttestationObject, []byte, []byte, error) {
-				return &attest.AttestationObject{}, []byte("clientHash"), []byte("keyID"), nil
-			},
-			func(r *http.Request) (string, error) { return "assigned challenge", nil },
-			nil,
-			func(ao *attest.AttestationObject, clientDataHash, keyID []byte) (*attest.Result, error) {
-				return &attest.Result{}, nil
-			},
-			func(r *http.Request, result *attest.Result) error { return nil },
-			http.StatusOK,
-		},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			target := handler.AttestationHandler{
-				Logger: slog.New(slog.NewTextHandler(os.Stdout, nil)),
-				AttestationPlugin: &MockAttestationPlugin{
-					Func_ParseRequest: func(r *http.Request) (*http.Request, *attest.AttestationObject, []byte, []byte, error) {
-						attestObj, clientDataHash, keyID, err := tt.ParseRequest(r)
-						return r, attestObj, clientDataHash, keyID, err
-					},
-					Func_GetAssignedChallenge: tt.GetAssignedChallenge,
-					Func_ResponseNewChallenge: tt.ResponseNewChallenge,
-					Func_StoreResult:          tt.StoreResult,
+			adapter := &mockAdapter{
+				verifyFunc: func() error { return tc.verifyErr },
+				newChallengeFunc: func() (string, error) {
+					return tc.newChallengeStr, tc.newChallengeErr
 				},
-				AttestationService: &MockAttestationService{Func_Verify: tt.Verify},
 			}
+			handler := handler.NewAppAttestHandler(logger, adapter)
 
-			r := httptest.NewRequest(http.MethodGet, "/attest/", nil)
+			req := httptest.NewRequest(http.MethodPost, "/verify", nil)
 			w := httptest.NewRecorder()
 
-			target.VerifyAttestation(w, r)
+			handler.Verify(w, req)
 
-			if w.Result().StatusCode != tt.wantStatusCode {
-				t.Errorf("invalid status code return: %d, want: %d", w.Result().StatusCode, tt.wantStatusCode)
+			resp := w.Result()
+			body := w.Body.String()
+			if resp.StatusCode != tc.wantStatus {
+				t.Errorf("expected status %d, got %d", tc.wantStatus, resp.StatusCode)
+			}
+			if body != tc.wantBody {
+				t.Errorf("expected body %q, got %q", tc.wantBody, body)
 			}
 		})
 	}

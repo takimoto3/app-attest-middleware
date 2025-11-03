@@ -2,110 +2,105 @@ package middleware
 
 import (
 	"bytes"
-	"crypto/ecdsa"
 	"io"
 	"log/slog"
 	"net/http"
 
-	attest "github.com/takimoto3/app-attest"
+	"github.com/takimoto3/app-attest-middleware/requestid"
 )
 
-// AssertionServiceProvider creates a new AssertionService for verifying an assertion.
-type AssertionServiceProvider func(challenge string, pubkey *ecdsa.PublicKey, counter uint32) AssertionService
-
-// AssertionService defines the interface for verifying an assertion object.
-type AssertionService interface {
-	Verify(assertObject *attest.AssertionObject, challenge string, clientData []byte) (uint32, error)
+type Config struct {
+	BodyLimit       int64
+	AttestationURL  string
+	NewChallengeURL string
 }
 
-// AssertionMiddleware handles App Attest assertion verification in HTTP request flow.
 type AssertionMiddleware struct {
-	logger *slog.Logger
-	appID  string
-	plugin AssertionPlugin
-
-	// Factory function for creating an AssertionService used to verify assertions.
-	NewService AssertionServiceProvider
+	logger  *slog.Logger
+	adapter Adapter
+	config  Config
 }
 
-// NewMiddleware creates a new AssertionMiddleware bound to the given appID and plugin.
-func NewMiddleware(logger *slog.Logger, appID string, plugin AssertionPlugin) *AssertionMiddleware {
-	return &AssertionMiddleware{
-		logger: logger,
-		appID:  appID,
-		plugin: plugin,
-		NewService: func(challenge string, pubkey *ecdsa.PublicKey, counter uint32) AssertionService {
-			return &attest.AssertionService{
-				AppID:     appID,
-				PublicKey: pubkey,
-				Challenge: challenge,
-				Counter:   counter,
-			}
-		},
+func NewAssertionMiddleware(logger *slog.Logger, config Config, adapter Adapter) *AssertionMiddleware {
+	m := &AssertionMiddleware{
+		logger:  logger,
+		adapter: adapter,
+		config:  config,
 	}
+	if m.config.BodyLimit == 0 {
+		m.config.BodyLimit = 10 << 20 // 10MB
+	}
+	if logger == nil {
+		m.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return m
 }
 
-// AttestAssertWith wraps an HTTP handler with assertion verification logic.
-func (m *AssertionMiddleware) AttestAssertWith(next http.HandlerFunc) http.Handler {
+func (m *AssertionMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var err error
-		var requestBody []byte
+		r, requestID, err := requestid.EnsureRequest(r)
+		if err != nil {
+			m.logger.Error("failed to generate request ID", "err", err)
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		logger := m.logger.With("request_id", requestID)
+		var body []byte
 		if r.Body != nil {
-			// Read and preserve request body since it may be parsed multiple times downstream.
-			requestBody, err = io.ReadAll(r.Body)
+			body, err = io.ReadAll(io.LimitReader(r.Body, m.config.BodyLimit+1))
 			if err != nil {
-				m.logger.Error("failed to read body", "err", err)
-				w.WriteHeader(http.StatusBadRequest)
+				logger.Error("failed to read request body", "err", err)
+				http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 				return
 			}
-			r.Body.Close()
-			r.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+			if int64(len(body)) > m.config.BodyLimit {
+				logger.Warn("request body exceeded limit",
+					"limit_bytes", m.config.BodyLimit,
+					"actual_bytes", len(body),
+					"remote_addr", r.RemoteAddr,
+					"path", r.URL.Path,
+				)
+				http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewBuffer(body))
 		}
-		r, assertion, challenge, err := m.plugin.ParseRequest(r, requestBody)
+		req := &Request{
+			Request: r,
+			Body:    body,
+		}
+
+		err = m.adapter.Verify(r.Context(), req)
 		if err != nil {
-			m.logger.Error("failed to parse request", "err", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		pubkey, counter, err := m.plugin.GetPublicKeyAndCounter(r)
-		if err != nil {
-			m.logger.Error("failed to get public key and counter", "err", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		if pubkey == nil {
-			// User has not completed Attestation yet
-			// → redirect client to attestation flow
-			m.plugin.RedirectToAttestation(w, r)
-			return
-		}
-		assignedChallenge, err := m.plugin.GetAssignedChallenge(r)
-		if err != nil {
-			m.logger.Error("failed to get assigned challenge", "err", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		if assignedChallenge == "" {
-			if err := m.plugin.ResponseNewChallenge(w, r); err != nil {
-				m.logger.Error("failed to response new challenge", "err", err)
-				w.WriteHeader(http.StatusInternalServerError)
+			switch err {
+			case ErrAttestationRequired:
+				logger.Info("redirecting to attestation", "url", m.config.AttestationURL)
+				http.Redirect(w, r, m.config.AttestationURL, http.StatusSeeOther)
+			case ErrNewChallenge:
+				logger.Info("redirecting to new challenge", "url", m.config.NewChallengeURL)
+				redirect := m.config.NewChallengeURL
+				if redirect == "" {
+					redirect = r.Header.Get("Referer")
+					logger.Info("fallback to Referer for redirect", "referer", redirect)
+					if redirect == "" {
+						redirect = "/"
+					}
+				}
+				http.Redirect(w, r, redirect, http.StatusSeeOther)
+			case ErrBadRequest:
+				logger.Warn("bad request in assertion middleware")
+				http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			case ErrInternal:
+				logger.Error("internal error in assertion middleware")
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			default:
+				logger.Error("unexpected error in assertion middleware", "err", err)
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			}
 			return
 		}
-		service := m.NewService(assignedChallenge, pubkey, counter)
-		cnt, err := service.Verify(assertion, challenge, requestBody)
-		if err != nil {
-			m.logger.Error("failed to verify assertion", "err", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
 
-		if err = m.plugin.StoreNewCounter(r, cnt); err != nil {
-			m.logger.Error("failed to store new counter", "err", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
+		logger.Debug("request passed assertion middleware")
 		next.ServeHTTP(w, r)
 	})
 }

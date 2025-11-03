@@ -1,11 +1,8 @@
-package middleware_test
+package middleware
 
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"errors"
 	"io"
 	"log/slog"
@@ -13,214 +10,173 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	attest "github.com/takimoto3/app-attest"
-	middleware "github.com/takimoto3/app-attest-middleware"
+	"github.com/takimoto3/app-attest-middleware/requestid"
 )
 
 type errReader struct{}
 
-func (e *errReader) Read(p []byte) (int, error) {
+func (*errReader) Read(p []byte) (n int, err error) {
 	return 0, errors.New("read error")
 }
 
-func (e *errReader) Close() error {
-	return nil
+type mockAdapter struct {
+	verifyFunc func(ctx context.Context, req *Request) error
 }
 
-type MockPlugin struct {
-	PubKey    *ecdsa.PublicKey
-	Counter   uint32
-	Challenge string
-
-	ErrParse        error
-	ErrGetKey       error
-	ErrGetChallenge error
-	ErrStore        error
-
-	Redirected            bool
-	NewChallengeResponded bool
+func (m *mockAdapter) Verify(ctx context.Context, req *Request) error {
+	return m.verifyFunc(ctx, req)
 }
 
-func (m *MockPlugin) ParseRequest(r *http.Request, b []byte) (*http.Request, *attest.AssertionObject, string, error) {
-	return r, &attest.AssertionObject{}, "clientChallenge", m.ErrParse
-}
-func (m *MockPlugin) GetPublicKeyAndCounter(r *http.Request) (*ecdsa.PublicKey, uint32, error) {
-	return m.PubKey, m.Counter, m.ErrGetKey
-}
-func (m *MockPlugin) GetAssignedChallenge(r *http.Request) (string, error) {
-	return m.Challenge, m.ErrGetChallenge
-}
-func (m *MockPlugin) RedirectToAttestation(w http.ResponseWriter, r *http.Request) {
-	m.Redirected = true
-	w.WriteHeader(http.StatusFound)
-}
-func (m *MockPlugin) ResponseNewChallenge(w http.ResponseWriter, r *http.Request) error {
-	m.NewChallengeResponded = true
-	w.WriteHeader(http.StatusCreated)
-	return nil
-}
-func (m *MockPlugin) StoreNewCounter(r *http.Request, c uint32) error {
-	return m.ErrStore
+type mockGenerator struct {
+	ID  string
+	Err error
 }
 
-type MockAssertionService struct {
-	Called      bool
-	ReturnCount uint32
-	ReturnErr   error
+func (m *mockGenerator) NextID() (string, error) {
+	return m.ID, m.Err
 }
 
-func (m *MockAssertionService) Verify(_ *attest.AssertionObject, _ string, _ []byte) (uint32, error) {
-	m.Called = true
-	return m.ReturnCount, m.ReturnErr
-}
+func TestAssertionMiddleware_Handler(t *testing.T) {
+	requestid.UseGenerator(&mockGenerator{ID: "generated_id"})
 
-type testHandler struct {
-	slog.Handler
-	errored bool
-}
-
-func (h *testHandler) Handle(ctx context.Context, r slog.Record) error {
-	if r.Level == slog.LevelError {
-		h.errored = true
-	}
-	return h.Handler.Handle(ctx, r)
-}
-
-func TestAssertionMiddleware_FullCoverage(t *testing.T) {
-	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	tests := map[string]struct {
-		plugin         *MockPlugin
-		service        *MockAssertionService
-		wantCode       int
-		expectNext     bool
-		expectErrorLog bool
-		reqBody        io.Reader
+		adapterErr    error
+		config        Config
+		refererHeader string
+		body          string
+		forceReadErr  bool
+		wantStatus    int
+		wantLocation  string
 	}{
-		"success": {
-			plugin: &MockPlugin{
-				PubKey:    &priv.PublicKey,
-				Counter:   1,
-				Challenge: "serverChallenge",
+		"successful assertion": {
+			adapterErr: nil,
+			config: Config{
+				AttestationURL:  "/attest",
+				NewChallengeURL: "/challenge",
+				BodyLimit:       1024,
 			},
-			service:        &MockAssertionService{ReturnCount: 2},
-			wantCode:       http.StatusOK,
-			expectNext:     true,
-			expectErrorLog: false,
-			reqBody:        bytes.NewBufferString(`{}`),
+			body:       "ok",
+			wantStatus: http.StatusOK,
 		},
-		"redirect if no pubkey": {
-			plugin:         &MockPlugin{PubKey: nil},
-			service:        &MockAssertionService{},
-			wantCode:       http.StatusFound,
-			expectNext:     false,
-			expectErrorLog: false,
-			reqBody:        bytes.NewBufferString(`{}`),
-		},
-		"new challenge if empty": {
-			plugin: &MockPlugin{
-				PubKey:    &priv.PublicKey,
-				Counter:   1,
-				Challenge: "",
+		"attestation required redirect": {
+			adapterErr: ErrAttestationRequired,
+			config: Config{
+				AttestationURL:  "/attest",
+				NewChallengeURL: "/challenge",
+				BodyLimit:       1024,
 			},
-			service:        &MockAssertionService{},
-			wantCode:       http.StatusCreated,
-			expectNext:     false,
-			expectErrorLog: false,
-			reqBody:        bytes.NewBufferString(`{}`),
+			body:         "ok",
+			wantStatus:   http.StatusSeeOther,
+			wantLocation: "/attest",
 		},
-		"parse request error": {
-			plugin: &MockPlugin{
-				PubKey:   &priv.PublicKey,
-				ErrParse: errors.New("parse failed"),
+		"new challenge redirect with config": {
+			adapterErr: ErrNewChallenge,
+			config: Config{
+				AttestationURL:  "/attest",
+				NewChallengeURL: "/challenge",
+				BodyLimit:       1024,
 			},
-			service:        &MockAssertionService{},
-			wantCode:       http.StatusBadRequest,
-			expectNext:     false,
-			expectErrorLog: true,
-			reqBody:        bytes.NewBufferString(`{}`),
+			body:         "ok",
+			wantStatus:   http.StatusSeeOther,
+			wantLocation: "/challenge",
 		},
-		"get pubkey error": {
-			plugin: &MockPlugin{
-				PubKey:    &priv.PublicKey,
-				ErrGetKey: errors.New("get pubkey failed"),
+		"new challenge redirect with referer fallback": {
+			adapterErr: ErrNewChallenge,
+			config: Config{
+				AttestationURL:  "/attest",
+				NewChallengeURL: "",
+				BodyLimit:       1024,
 			},
-			service:        &MockAssertionService{},
-			wantCode:       http.StatusInternalServerError,
-			expectNext:     false,
-			expectErrorLog: true,
-			reqBody:        bytes.NewBufferString(`{}`),
+			refererHeader: "/referer",
+			body:          "ok",
+			wantStatus:    http.StatusSeeOther,
+			wantLocation:  "/referer",
 		},
-		"get challenge error": {
-			plugin: &MockPlugin{
-				PubKey:          &priv.PublicKey,
-				Counter:         1,
-				ErrGetChallenge: errors.New("get challenge failed"),
+		"new challenge redirect with empty urls": {
+			adapterErr: ErrNewChallenge,
+			config: Config{
+				AttestationURL:  "/attest",
+				NewChallengeURL: "",
+				BodyLimit:       1024,
 			},
-			service:        &MockAssertionService{},
-			wantCode:       http.StatusInternalServerError,
-			expectNext:     false,
-			expectErrorLog: true,
-			reqBody:        bytes.NewBufferString(`{}`),
+			body:         "ok",
+			wantStatus:   http.StatusSeeOther,
+			wantLocation: "/", // fallback to "/" when both NewChallengeURL and Referer are empty
 		},
-		"verify error": {
-			plugin: &MockPlugin{
-				PubKey:    &priv.PublicKey,
-				Counter:   1,
-				Challenge: "serverChallenge",
+		"bad request": {
+			adapterErr: ErrBadRequest,
+			config: Config{
+				AttestationURL:  "/attest",
+				NewChallengeURL: "/challenge",
+				BodyLimit:       1024,
 			},
-			service:        &MockAssertionService{ReturnErr: errors.New("verify failed")},
-			wantCode:       http.StatusBadRequest,
-			expectNext:     false,
-			expectErrorLog: true,
-			reqBody:        bytes.NewBufferString(`{}`),
+			body:       "ok",
+			wantStatus: http.StatusBadRequest,
 		},
-		"store error": {
-			plugin: &MockPlugin{
-				PubKey:    &priv.PublicKey,
-				Counter:   1,
-				Challenge: "serverChallenge",
-				ErrStore:  errors.New("store failed"),
+		"internal error": {
+			adapterErr: ErrInternal,
+			config: Config{
+				AttestationURL:  "/attest",
+				NewChallengeURL: "/challenge",
+				BodyLimit:       1024,
 			},
-			service:        &MockAssertionService{},
-			wantCode:       http.StatusInternalServerError,
-			expectNext:     false,
-			expectErrorLog: true,
-			reqBody:        bytes.NewBufferString(`{}`),
+			body:       "ok",
+			wantStatus: http.StatusInternalServerError,
 		},
-		"body nil": { // r.Body == nil
-			plugin: &MockPlugin{
-				PubKey:    &priv.PublicKey,
-				Counter:   1,
-				Challenge: "serverChallenge",
+		"unexpected error": {
+			adapterErr: errors.New("unexpected"),
+			config: Config{
+				AttestationURL:  "/attest",
+				NewChallengeURL: "/challenge",
+				BodyLimit:       1024,
 			},
-			service:        &MockAssertionService{},
-			wantCode:       http.StatusOK,
-			expectNext:     true,
-			expectErrorLog: false,
-			reqBody:        nil,
+			body:       "ok",
+			wantStatus: http.StatusInternalServerError,
 		},
-		"body read error": {
-			plugin:         &MockPlugin{},
-			service:        &MockAssertionService{},
-			wantCode:       http.StatusBadRequest,
-			expectNext:     false,
-			expectErrorLog: true,
-			reqBody:        &errReader{},
+		"body exceeds limit": {
+			adapterErr: nil,
+			config: Config{
+				AttestationURL:  "/attest",
+				NewChallengeURL: "/challenge",
+				BodyLimit:       1,
+			},
+			body:       "ab",
+			wantStatus: http.StatusBadRequest,
+		},
+		"io.ReadAll error": {
+			adapterErr: nil,
+			config: Config{
+				AttestationURL:  "/attest",
+				NewChallengeURL: "/challenge",
+				BodyLimit:       1024,
+			},
+			body:         "ok",
+			forceReadErr: true,
+			wantStatus:   http.StatusBadRequest,
+		},
+		"no body request": {
+			adapterErr: nil,
+			config: Config{
+				AttestationURL:  "/attest",
+				NewChallengeURL: "/challenge",
+				BodyLimit:       1024,
+			},
+			body:       "",
+			wantStatus: http.StatusOK,
 		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			handler := &testHandler{Handler: slog.NewTextHandler(io.Discard, nil)}
-			logger := slog.New(handler)
-			mw := middleware.NewMiddleware(logger, "com.example.app", tt.plugin)
-			mw.NewService = func(ch string, pk *ecdsa.PublicKey, c uint32) middleware.AssertionService {
-				return tt.service
+			adapter := &mockAdapter{
+				verifyFunc: func(ctx context.Context, req *Request) error {
+					return tt.adapterErr
+				},
 			}
 
-			req := httptest.NewRequest("POST", "/assert", tt.reqBody)
-			w := httptest.NewRecorder()
+			mw := NewAssertionMiddleware(logger, tt.config, adapter)
 
 			calledNext := false
 			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -228,21 +184,75 @@ func TestAssertionMiddleware_FullCoverage(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 
-			h := mw.AttestAssertWith(next)
-			h.ServeHTTP(w, req)
+			var req *http.Request
+			if tt.forceReadErr {
+				req = httptest.NewRequest(http.MethodPost, "/", &errReader{})
+			} else {
+				req = httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(tt.body))
+			}
+
+			if tt.refererHeader != "" {
+				req.Header.Set("Referer", tt.refererHeader)
+			}
+
+			w := httptest.NewRecorder()
+			handler := mw.Handler(next)
+			handler.ServeHTTP(w, req)
+
 			res := w.Result()
+			defer res.Body.Close()
 
-			if res.StatusCode != tt.wantCode {
-				t.Fatalf("[%s] unexpected status: got %d, want %d", name, res.StatusCode, tt.wantCode)
+			if tt.adapterErr == nil && !tt.forceReadErr && tt.config.BodyLimit >= int64(len(tt.body)) && !calledNext {
+				t.Errorf("expected next handler to be called")
 			}
 
-			if calledNext != tt.expectNext {
-				t.Errorf("[%s] next handler called: got %v, want %v", name, calledNext, tt.expectNext)
+			if res.StatusCode != tt.wantStatus {
+				t.Errorf("got status %d, want %d", res.StatusCode, tt.wantStatus)
 			}
 
-			if tt.expectErrorLog && !handler.errored {
-				t.Errorf("[%s] expected error log but got none", name)
+			if tt.wantLocation != "" {
+				loc := res.Header.Get("Location")
+				if loc != tt.wantLocation {
+					t.Errorf("got Location %q, want %q", loc, tt.wantLocation)
+				}
 			}
 		})
+	}
+}
+
+func TestAssertionMiddleware_Initialization(t *testing.T) {
+	adapter := &mockAdapter{
+		verifyFunc: func(ctx context.Context, req *Request) error {
+			return nil
+		},
+	}
+
+	cfg := Config{
+		AttestationURL:  "/attest",
+		NewChallengeURL: "/challenge",
+	}
+
+	mw := NewAssertionMiddleware(nil, cfg, adapter)
+
+	if mw.logger == nil {
+		t.Fatal("expected default logger to be set when logger is nil")
+	}
+
+	if mw.config.BodyLimit != 10<<20 {
+		t.Fatalf("expected BodyLimit to be default 10MB, got %d", mw.config.BodyLimit)
+	}
+
+	calledNext := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calledNext = true
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString("ok"))
+	w := httptest.NewRecorder()
+
+	mw.Handler(next).ServeHTTP(w, req)
+
+	if !calledNext {
+		t.Fatal("next handler should be called")
 	}
 }

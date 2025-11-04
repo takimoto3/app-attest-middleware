@@ -36,7 +36,7 @@ func NewAssertionMiddleware(logger *slog.Logger, config Config, adapter Adapter)
 	return m
 }
 
-func (m *AssertionMiddleware) Handler(next http.Handler) http.Handler {
+func (m *AssertionMiddleware) Use(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r, requestID, err := requestid.EnsureRequest(r)
 		if err != nil {

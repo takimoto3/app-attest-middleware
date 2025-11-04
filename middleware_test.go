@@ -196,7 +196,7 @@ func TestAssertionMiddleware_Handler(t *testing.T) {
 			}
 
 			w := httptest.NewRecorder()
-			handler := mw.Handler(next)
+			handler := mw.Use(next)
 			handler.ServeHTTP(w, req)
 
 			res := w.Result()
@@ -250,7 +250,7 @@ func TestAssertionMiddleware_Initialization(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString("ok"))
 	w := httptest.NewRecorder()
 
-	mw.Handler(next).ServeHTTP(w, req)
+	mw.Use(next).ServeHTTP(w, req)
 
 	if !calledNext {
 		t.Fatal("next handler should be called")

@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/takimoto3/app-attest-middleware/adapter"
+	"github.com/takimoto3/app-attest-middleware/plugin"
 	"github.com/takimoto3/app-attest-middleware/requestid"
 )
 
@@ -20,10 +23,10 @@ func (*errReader) Read(p []byte) (n int, err error) {
 }
 
 type mockAdapter struct {
-	verifyFunc func(ctx context.Context, req *Request) error
+	verifyFunc func(ctx context.Context, req *plugin.AssertionRequest) error
 }
 
-func (m *mockAdapter) Verify(ctx context.Context, req *Request) error {
+func (m *mockAdapter) Verify(ctx context.Context, req *plugin.AssertionRequest) error {
 	return m.verifyFunc(ctx, req)
 }
 
@@ -61,7 +64,7 @@ func TestAssertionMiddleware_Handler(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		"attestation required redirect": {
-			adapterErr: ErrAttestationRequired,
+			adapterErr: adapter.ErrAttestationRequired,
 			config: Config{
 				AttestationURL:  "/attest",
 				NewChallengeURL: "/challenge",
@@ -72,7 +75,7 @@ func TestAssertionMiddleware_Handler(t *testing.T) {
 			wantLocation: "/attest",
 		},
 		"new challenge redirect with config": {
-			adapterErr: ErrNewChallenge,
+			adapterErr: adapter.ErrNewChallenge,
 			config: Config{
 				AttestationURL:  "/attest",
 				NewChallengeURL: "/challenge",
@@ -83,7 +86,7 @@ func TestAssertionMiddleware_Handler(t *testing.T) {
 			wantLocation: "/challenge",
 		},
 		"new challenge redirect with referer fallback": {
-			adapterErr: ErrNewChallenge,
+			adapterErr: adapter.ErrNewChallenge,
 			config: Config{
 				AttestationURL:  "/attest",
 				NewChallengeURL: "",
@@ -95,7 +98,7 @@ func TestAssertionMiddleware_Handler(t *testing.T) {
 			wantLocation:  "/referer",
 		},
 		"new challenge redirect with empty urls": {
-			adapterErr: ErrNewChallenge,
+			adapterErr: adapter.ErrNewChallenge,
 			config: Config{
 				AttestationURL:  "/attest",
 				NewChallengeURL: "",
@@ -106,7 +109,7 @@ func TestAssertionMiddleware_Handler(t *testing.T) {
 			wantLocation: "/", // fallback to "/" when both NewChallengeURL and Referer are empty
 		},
 		"bad request": {
-			adapterErr: ErrBadRequest,
+			adapterErr: adapter.ErrBadRequest,
 			config: Config{
 				AttestationURL:  "/attest",
 				NewChallengeURL: "/challenge",
@@ -116,7 +119,7 @@ func TestAssertionMiddleware_Handler(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		"internal error": {
-			adapterErr: ErrInternal,
+			adapterErr: adapter.ErrInternal,
 			config: Config{
 				AttestationURL:  "/attest",
 				NewChallengeURL: "/challenge",
@@ -166,12 +169,22 @@ func TestAssertionMiddleware_Handler(t *testing.T) {
 			body:       "",
 			wantStatus: http.StatusOK,
 		},
+		"wrapped attestation required redirect (fails with current switch)": {
+			adapterErr: fmt.Errorf("some context: %w", adapter.ErrAttestationRequired),
+			config: Config{
+				AttestationURL:  "/attest",
+				NewChallengeURL: "/challenge",
+				BodyLimit:       1024,
+			},
+			body:       "ok",
+			wantStatus: http.StatusSeeOther, // Expecting redirect if errors.Is were used
+		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			adapter := &mockAdapter{
-				verifyFunc: func(ctx context.Context, req *Request) error {
+				verifyFunc: func(ctx context.Context, req *plugin.AssertionRequest) error {
 					return tt.adapterErr
 				},
 			}
@@ -222,7 +235,7 @@ func TestAssertionMiddleware_Handler(t *testing.T) {
 
 func TestAssertionMiddleware_Initialization(t *testing.T) {
 	adapter := &mockAdapter{
-		verifyFunc: func(ctx context.Context, req *Request) error {
+		verifyFunc: func(ctx context.Context, req *plugin.AssertionRequest) error {
 			return nil
 		},
 	}

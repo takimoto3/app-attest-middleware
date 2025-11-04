@@ -2,10 +2,13 @@ package middleware
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 
+	"github.com/takimoto3/app-attest-middleware/adapter"
+	"github.com/takimoto3/app-attest-middleware/plugin"
 	"github.com/takimoto3/app-attest-middleware/requestid"
 )
 
@@ -17,11 +20,11 @@ type Config struct {
 
 type AssertionMiddleware struct {
 	logger  *slog.Logger
-	adapter Adapter
+	adapter adapter.AssertionAdapter
 	config  Config
 }
 
-func NewAssertionMiddleware(logger *slog.Logger, config Config, adapter Adapter) *AssertionMiddleware {
+func NewAssertionMiddleware(logger *slog.Logger, config Config, adapter adapter.AssertionAdapter) *AssertionMiddleware {
 	m := &AssertionMiddleware{
 		logger:  logger,
 		adapter: adapter,
@@ -65,18 +68,17 @@ func (m *AssertionMiddleware) Use(next http.Handler) http.Handler {
 			}
 			r.Body = io.NopCloser(bytes.NewBuffer(body))
 		}
-		req := &Request{
+		req := &plugin.AssertionRequest{
 			Request: r,
 			Body:    body,
 		}
 
 		err = m.adapter.Verify(r.Context(), req)
 		if err != nil {
-			switch err {
-			case ErrAttestationRequired:
+			if errors.Is(err, adapter.ErrAttestationRequired) {
 				logger.Info("redirecting to attestation", "url", m.config.AttestationURL)
 				http.Redirect(w, r, m.config.AttestationURL, http.StatusSeeOther)
-			case ErrNewChallenge:
+			} else if errors.Is(err, adapter.ErrNewChallenge) {
 				logger.Info("redirecting to new challenge", "url", m.config.NewChallengeURL)
 				redirect := m.config.NewChallengeURL
 				if redirect == "" {
@@ -87,13 +89,13 @@ func (m *AssertionMiddleware) Use(next http.Handler) http.Handler {
 					}
 				}
 				http.Redirect(w, r, redirect, http.StatusSeeOther)
-			case ErrBadRequest:
+			} else if errors.Is(err, adapter.ErrBadRequest) {
 				logger.Warn("bad request in assertion middleware")
 				http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-			case ErrInternal:
+			} else if errors.Is(err, adapter.ErrInternal) {
 				logger.Error("internal error in assertion middleware")
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			default:
+			} else {
 				logger.Error("unexpected error in assertion middleware", "err", err)
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			}

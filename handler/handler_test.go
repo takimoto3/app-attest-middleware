@@ -10,11 +10,13 @@ import (
 	"testing"
 
 	"github.com/sony/sonyflake/v2"
+	"github.com/takimoto3/app-attest-middleware/adapter"
 	"github.com/takimoto3/app-attest-middleware/handler"
+	"github.com/takimoto3/app-attest-middleware/plugin"
 	"github.com/takimoto3/app-attest-middleware/requestid"
 )
 
-var _ handler.Adapter = &mockAdapter{}
+var _ adapter.AttestationAdapter = &mockAdapter{}
 
 // Mock adapter to simulate Verify / NewChallenge behavior
 type mockAdapter struct {
@@ -22,11 +24,11 @@ type mockAdapter struct {
 	newChallengeFunc func() (string, error)
 }
 
-func (m *mockAdapter) Verify(ctx context.Context, _ *handler.Request) error {
+func (m *mockAdapter) Verify(ctx context.Context, _ *plugin.AttestationRequest) error {
 	return m.verifyFunc()
 }
 
-func (m *mockAdapter) NewChallenge(ctx context.Context, _ *handler.Request) (string, error) {
+func (m *mockAdapter) NewChallenge(ctx context.Context, _ *plugin.AttestationRequest) (string, error) {
 	return m.newChallengeFunc()
 }
 
@@ -46,26 +48,26 @@ func TestVerifyHandler(t *testing.T) {
 			wantBody:   "",
 		},
 		"verify_failure": {
-			verifyErr:  handler.ErrBadRequest,
+			verifyErr:  adapter.ErrBadRequest,
 			wantStatus: http.StatusBadRequest,
 			wantBody:   "Bad Request\n",
 		},
 		"triggers_new_challenge_success": {
-			verifyErr:       handler.ErrNewChallenge,
+			verifyErr:       adapter.ErrNewChallenge,
 			newChallengeStr: "challenge123",
 			newChallengeErr: nil,
 			wantStatus:      http.StatusOK,
 			wantBody:        "challenge123",
 		},
 		"triggers_new_challenge_failure": {
-			verifyErr:       handler.ErrNewChallenge,
+			verifyErr:       adapter.ErrNewChallenge,
 			newChallengeStr: "",
-			newChallengeErr: handler.ErrBadRequest,
+			newChallengeErr: adapter.ErrBadRequest,
 			wantStatus:      http.StatusBadRequest,
 			wantBody:        "Bad Request\n",
 		},
 		"new_challenge_failed_internal": {
-			verifyErr:       handler.ErrNewChallenge,
+			verifyErr:       adapter.ErrNewChallenge,
 			newChallengeStr: "",
 			newChallengeErr: errors.New("some internal error"),
 			wantStatus:      http.StatusInternalServerError,

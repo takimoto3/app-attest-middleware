@@ -1,4 +1,4 @@
-package middleware
+package adapter
 
 import (
 	"context"
@@ -7,24 +7,13 @@ import (
 	"log/slog"
 
 	attest "github.com/takimoto3/app-attest"
+	"github.com/takimoto3/app-attest-middleware/plugin"
 	"github.com/takimoto3/app-attest-middleware/requestid"
 )
 
 var (
-	// ErrNewChallenge indicates no challenge is assigned yet
-	ErrNewChallenge = errors.New("no challenge assigned")
-	// ErrBadRequest indicates the request is invalid
-	ErrBadRequest = errors.New("bad request")
-	// ErrInternal indicates an internal server error
-	ErrInternal            = errors.New("internal error")
 	ErrAttestationRequired = errors.New("attestation required")
 )
-
-type Request struct {
-	Request any
-	Body    []byte
-	Object  any
-}
 
 // AssertionServiceProvider creates a new AssertionService for verifying an assertion.
 type AssertionServiceProvider func(challenge string, pubkey *ecdsa.PublicKey, counter uint32) AssertionService
@@ -34,19 +23,19 @@ type AssertionService interface {
 	Verify(assertObject *attest.AssertionObject, challenge string, clientData []byte) (uint32, error)
 }
 
-type Adapter interface {
-	Verify(ctx context.Context, r *Request) error
+type AssertionAdapter interface {
+	Verify(ctx context.Context, r *plugin.AssertionRequest) error
 }
 
-type AssertionAdapter struct {
+type assertionAdapter struct {
 	logger *slog.Logger
 	// Factory function for creating an AssertionService used to verify assertions.
 	NewService AssertionServiceProvider
-	plugin     AdapterPlugin
+	plugin     plugin.AssertionPlugin
 }
 
-func NewAssertionAdapter(logger *slog.Logger, appID string, plugin AdapterPlugin) Adapter {
-	return &AssertionAdapter{
+func NewAssertionAdapter(logger *slog.Logger, appID string, plugin plugin.AssertionPlugin) AssertionAdapter {
+	return &assertionAdapter{
 		logger: logger,
 		plugin: plugin,
 		NewService: func(challenge string, pubkey *ecdsa.PublicKey, counter uint32) AssertionService {
@@ -60,7 +49,7 @@ func NewAssertionAdapter(logger *slog.Logger, appID string, plugin AdapterPlugin
 	}
 }
 
-func (a *AssertionAdapter) Verify(ctx context.Context, r *Request) error {
+func (a *assertionAdapter) Verify(ctx context.Context, r *plugin.AssertionRequest) error {
 	requestID := requestid.FromContext(ctx)
 	logger := a.logger.With("request_id", requestID)
 	logger.Debug("starting assertion verification")

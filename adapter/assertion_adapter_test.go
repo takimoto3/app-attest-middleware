@@ -1,4 +1,4 @@
-package middleware
+package adapter
 
 import (
 	"context"
@@ -12,37 +12,38 @@ import (
 	"testing"
 
 	attest "github.com/takimoto3/app-attest"
+	"github.com/takimoto3/app-attest-middleware/plugin"
 )
 
 type mockPlugin struct {
-	ParseRequestFn        func(ctx context.Context, r *Request) (*attest.AssertionObject, string, error)
-	PublicKeyAndCounterFn func(ctx context.Context, r *Request) (*ecdsa.PublicKey, uint32, error)
-	AssignedChallengeFn   func(ctx context.Context, r *Request) (string, error)
-	UpdateCounterFn       func(ctx context.Context, r *Request, cnt uint32) error
+	ParseRequestFn        func(ctx context.Context, r *plugin.AssertionRequest) (*attest.AssertionObject, string, error)
+	PublicKeyAndCounterFn func(ctx context.Context, r *plugin.AssertionRequest) (*ecdsa.PublicKey, uint32, error)
+	AssignedChallengeFn   func(ctx context.Context, r *plugin.AssertionRequest) (string, error)
+	UpdateCounterFn       func(ctx context.Context, r *plugin.AssertionRequest, cnt uint32) error
 }
 
-func (m *mockPlugin) ParseRequest(ctx context.Context, r *Request) (*attest.AssertionObject, string, error) {
+func (m *mockPlugin) ParseRequest(ctx context.Context, r *plugin.AssertionRequest) (*attest.AssertionObject, string, error) {
 	if m.ParseRequestFn != nil {
 		return m.ParseRequestFn(ctx, r)
 	}
 	return nil, "", nil
 }
 
-func (m *mockPlugin) PublicKeyAndCounter(ctx context.Context, r *Request) (*ecdsa.PublicKey, uint32, error) {
+func (m *mockPlugin) PublicKeyAndCounter(ctx context.Context, r *plugin.AssertionRequest) (*ecdsa.PublicKey, uint32, error) {
 	if m.PublicKeyAndCounterFn != nil {
 		return m.PublicKeyAndCounterFn(ctx, r)
 	}
 	return nil, 0, nil
 }
 
-func (m *mockPlugin) AssignedChallenge(ctx context.Context, r *Request) (string, error) {
+func (m *mockPlugin) AssignedChallenge(ctx context.Context, r *plugin.AssertionRequest) (string, error) {
 	if m.AssignedChallengeFn != nil {
 		return m.AssignedChallengeFn(ctx, r)
 	}
 	return "", nil
 }
 
-func (m *mockPlugin) UpdateCounter(ctx context.Context, r *Request, cnt uint32) error {
+func (m *mockPlugin) UpdateCounter(ctx context.Context, r *plugin.AssertionRequest, cnt uint32) error {
 	if m.UpdateCounterFn != nil {
 		return m.UpdateCounterFn(ctx, r, cnt)
 	}
@@ -67,23 +68,23 @@ func TestAssertionAdapter_Verify(t *testing.T) {
 		t.Fatal(err)
 	}
 	tests := map[string]struct {
-		setupPlugin  func(t *testing.T) AdapterPlugin
+		setupPlugin  func(t *testing.T) plugin.AssertionPlugin
 		setupService func(challenge string, pubkey *ecdsa.PublicKey, counter uint32) AssertionService
 		wantErr      error
 	}{
 		"successful verification": {
-			setupPlugin: func(t *testing.T) AdapterPlugin {
+			setupPlugin: func(t *testing.T) plugin.AssertionPlugin {
 				return &mockPlugin{
-					ParseRequestFn: func(ctx context.Context, r *Request) (*attest.AssertionObject, string, error) {
+					ParseRequestFn: func(ctx context.Context, r *plugin.AssertionRequest) (*attest.AssertionObject, string, error) {
 						return &attest.AssertionObject{}, "challenge", nil
 					},
-					PublicKeyAndCounterFn: func(ctx context.Context, r *Request) (*ecdsa.PublicKey, uint32, error) {
+					PublicKeyAndCounterFn: func(ctx context.Context, r *plugin.AssertionRequest) (*ecdsa.PublicKey, uint32, error) {
 						return &privkey.PublicKey, 1, nil
 					},
-					AssignedChallengeFn: func(ctx context.Context, r *Request) (string, error) {
+					AssignedChallengeFn: func(ctx context.Context, r *plugin.AssertionRequest) (string, error) {
 						return "assigned", nil
 					},
-					UpdateCounterFn: func(ctx context.Context, r *Request, cnt uint32) error {
+					UpdateCounterFn: func(ctx context.Context, r *plugin.AssertionRequest, cnt uint32) error {
 						if cnt != 42 {
 							t.Errorf("unexpected counter value: got %d, want %d", cnt, 42)
 						}
@@ -115,9 +116,9 @@ func TestAssertionAdapter_Verify(t *testing.T) {
 		},
 
 		"ParseRequest fails": {
-			setupPlugin: func(t *testing.T) AdapterPlugin {
+			setupPlugin: func(t *testing.T) plugin.AssertionPlugin {
 				return &mockPlugin{
-					ParseRequestFn: func(ctx context.Context, r *Request) (*attest.AssertionObject, string, error) {
+					ParseRequestFn: func(ctx context.Context, r *plugin.AssertionRequest) (*attest.AssertionObject, string, error) {
 						return nil, "", errors.New("parse error")
 					},
 				}
@@ -127,12 +128,12 @@ func TestAssertionAdapter_Verify(t *testing.T) {
 		},
 
 		"PublicKeyAndCounter fails": {
-			setupPlugin: func(t *testing.T) AdapterPlugin {
+			setupPlugin: func(t *testing.T) plugin.AssertionPlugin {
 				return &mockPlugin{
-					ParseRequestFn: func(ctx context.Context, r *Request) (*attest.AssertionObject, string, error) {
+					ParseRequestFn: func(ctx context.Context, r *plugin.AssertionRequest) (*attest.AssertionObject, string, error) {
 						return &attest.AssertionObject{}, "challenge", nil
 					},
-					PublicKeyAndCounterFn: func(ctx context.Context, r *Request) (*ecdsa.PublicKey, uint32, error) {
+					PublicKeyAndCounterFn: func(ctx context.Context, r *plugin.AssertionRequest) (*ecdsa.PublicKey, uint32, error) {
 						return nil, 0, errors.New("db error")
 					},
 				}
@@ -142,12 +143,12 @@ func TestAssertionAdapter_Verify(t *testing.T) {
 		},
 
 		"missing attestation": {
-			setupPlugin: func(t *testing.T) AdapterPlugin {
+			setupPlugin: func(t *testing.T) plugin.AssertionPlugin {
 				return &mockPlugin{
-					ParseRequestFn: func(ctx context.Context, r *Request) (*attest.AssertionObject, string, error) {
+					ParseRequestFn: func(ctx context.Context, r *plugin.AssertionRequest) (*attest.AssertionObject, string, error) {
 						return &attest.AssertionObject{}, "challenge", nil
 					},
-					PublicKeyAndCounterFn: func(ctx context.Context, r *Request) (*ecdsa.PublicKey, uint32, error) {
+					PublicKeyAndCounterFn: func(ctx context.Context, r *plugin.AssertionRequest) (*ecdsa.PublicKey, uint32, error) {
 						return nil, 0, nil
 					},
 				}
@@ -157,15 +158,15 @@ func TestAssertionAdapter_Verify(t *testing.T) {
 		},
 
 		"AssignedChallenge fails": {
-			setupPlugin: func(t *testing.T) AdapterPlugin {
+			setupPlugin: func(t *testing.T) plugin.AssertionPlugin {
 				return &mockPlugin{
-					ParseRequestFn: func(ctx context.Context, r *Request) (*attest.AssertionObject, string, error) {
+					ParseRequestFn: func(ctx context.Context, r *plugin.AssertionRequest) (*attest.AssertionObject, string, error) {
 						return &attest.AssertionObject{}, "challenge", nil
 					},
-					PublicKeyAndCounterFn: func(ctx context.Context, r *Request) (*ecdsa.PublicKey, uint32, error) {
+					PublicKeyAndCounterFn: func(ctx context.Context, r *plugin.AssertionRequest) (*ecdsa.PublicKey, uint32, error) {
 						return &ecdsa.PublicKey{}, 1, nil
 					},
-					AssignedChallengeFn: func(ctx context.Context, r *Request) (string, error) {
+					AssignedChallengeFn: func(ctx context.Context, r *plugin.AssertionRequest) (string, error) {
 						return "", errors.New("db error")
 					},
 				}
@@ -175,15 +176,15 @@ func TestAssertionAdapter_Verify(t *testing.T) {
 		},
 
 		"no assigned challenge": {
-			setupPlugin: func(t *testing.T) AdapterPlugin {
+			setupPlugin: func(t *testing.T) plugin.AssertionPlugin {
 				return &mockPlugin{
-					ParseRequestFn: func(ctx context.Context, r *Request) (*attest.AssertionObject, string, error) {
+					ParseRequestFn: func(ctx context.Context, r *plugin.AssertionRequest) (*attest.AssertionObject, string, error) {
 						return &attest.AssertionObject{}, "challenge", nil
 					},
-					PublicKeyAndCounterFn: func(ctx context.Context, r *Request) (*ecdsa.PublicKey, uint32, error) {
+					PublicKeyAndCounterFn: func(ctx context.Context, r *plugin.AssertionRequest) (*ecdsa.PublicKey, uint32, error) {
 						return &ecdsa.PublicKey{}, 1, nil
 					},
-					AssignedChallengeFn: func(ctx context.Context, r *Request) (string, error) {
+					AssignedChallengeFn: func(ctx context.Context, r *plugin.AssertionRequest) (string, error) {
 						return "", nil
 					},
 				}
@@ -193,15 +194,15 @@ func TestAssertionAdapter_Verify(t *testing.T) {
 		},
 
 		"Verify fails": {
-			setupPlugin: func(t *testing.T) AdapterPlugin {
+			setupPlugin: func(t *testing.T) plugin.AssertionPlugin {
 				return &mockPlugin{
-					ParseRequestFn: func(ctx context.Context, r *Request) (*attest.AssertionObject, string, error) {
+					ParseRequestFn: func(ctx context.Context, r *plugin.AssertionRequest) (*attest.AssertionObject, string, error) {
 						return &attest.AssertionObject{}, "challenge", nil
 					},
-					PublicKeyAndCounterFn: func(ctx context.Context, r *Request) (*ecdsa.PublicKey, uint32, error) {
+					PublicKeyAndCounterFn: func(ctx context.Context, r *plugin.AssertionRequest) (*ecdsa.PublicKey, uint32, error) {
 						return &ecdsa.PublicKey{}, 1, nil
 					},
-					AssignedChallengeFn: func(ctx context.Context, r *Request) (string, error) {
+					AssignedChallengeFn: func(ctx context.Context, r *plugin.AssertionRequest) (string, error) {
 						return "challenge", nil
 					},
 				}
@@ -217,18 +218,18 @@ func TestAssertionAdapter_Verify(t *testing.T) {
 		},
 
 		"UpdateCounter fails": {
-			setupPlugin: func(t *testing.T) AdapterPlugin {
+			setupPlugin: func(t *testing.T) plugin.AssertionPlugin {
 				return &mockPlugin{
-					ParseRequestFn: func(ctx context.Context, r *Request) (*attest.AssertionObject, string, error) {
+					ParseRequestFn: func(ctx context.Context, r *plugin.AssertionRequest) (*attest.AssertionObject, string, error) {
 						return &attest.AssertionObject{}, "challenge", nil
 					},
-					PublicKeyAndCounterFn: func(ctx context.Context, r *Request) (*ecdsa.PublicKey, uint32, error) {
+					PublicKeyAndCounterFn: func(ctx context.Context, r *plugin.AssertionRequest) (*ecdsa.PublicKey, uint32, error) {
 						return &ecdsa.PublicKey{}, 1, nil
 					},
-					AssignedChallengeFn: func(ctx context.Context, r *Request) (string, error) {
+					AssignedChallengeFn: func(ctx context.Context, r *plugin.AssertionRequest) (string, error) {
 						return "challenge", nil
 					},
-					UpdateCounterFn: func(ctx context.Context, r *Request, cnt uint32) error {
+					UpdateCounterFn: func(ctx context.Context, r *plugin.AssertionRequest, cnt uint32) error {
 						return errors.New("db error")
 					},
 				}
@@ -246,13 +247,13 @@ func TestAssertionAdapter_Verify(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			plugin := tc.setupPlugin(t)
-			adapter := NewAssertionAdapter(logger, "appID", plugin).(*AssertionAdapter)
+			p := tc.setupPlugin(t)
+			adapter := NewAssertionAdapter(logger, "appID", p).(*assertionAdapter)
 
 			// Override NewService to inject mock AssertionService
 			adapter.NewService = tc.setupService
 
-			err := adapter.Verify(context.Background(), &Request{})
+			err := adapter.Verify(context.Background(), &plugin.AssertionRequest{})
 			if !errors.Is(err, tc.wantErr) {
 				t.Errorf("[%s] got err %v, want %v", name, err, tc.wantErr)
 			}
@@ -264,7 +265,7 @@ func TestAssertionAdapter_NewServiceCreation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 	plugin := &mockPlugin{}
 
-	a := NewAssertionAdapter(logger, "testAppID", plugin).(*AssertionAdapter)
+	a := NewAssertionAdapter(logger, "testAppID", plugin).(*assertionAdapter)
 
 	service := a.NewService("challenge", &ecdsa.PublicKey{}, 10)
 	if _, ok := service.(*attest.AssertionService); !ok {

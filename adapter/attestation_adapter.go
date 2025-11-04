@@ -1,4 +1,4 @@
-package handler
+package adapter
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	attest "github.com/takimoto3/app-attest"
+	"github.com/takimoto3/app-attest-middleware/plugin"
 	"github.com/takimoto3/app-attest-middleware/requestid"
 )
 
@@ -24,31 +25,31 @@ type AttestationService interface {
 	Verify(attestObj *attest.AttestationObject, clientDataHash, keyID []byte) (*attest.Result, error)
 }
 
-var _ Adapter = &AttestationAdapter{}
-
-type Adapter interface {
+type AttestationAdapter interface {
 	// NewChallenge generates a new challenge
-	NewChallenge(ctx context.Context, r *Request) (string, error)
+	NewChallenge(ctx context.Context, r *plugin.AttestationRequest) (string, error)
 	// Verify verifies the attestation request
-	Verify(ctx context.Context, r *Request) error
+	Verify(ctx context.Context, r *plugin.AttestationRequest) error
 }
 
-// Request wraps the request data and verification result
-type Request struct {
-	Request any
-	Result  *attest.Result
-	Object  any
-}
-
-// AttestationAdapter implements Adapter interface
-type AttestationAdapter struct {
+// attestationAdapter implements Adapter interface
+type attestationAdapter struct {
 	logger  *slog.Logger
 	service AttestationService
-	plugin  AdapterPlugin
+	plugin  plugin.AttestationPlugin
+}
+
+// NewAttestationAdapter creates a new AttestationAdapter
+func NewAttestationAdapter(logger *slog.Logger, service AttestationService, plugin plugin.AttestationPlugin) AttestationAdapter {
+	return &attestationAdapter{
+		logger:  logger,
+		service: service,
+		plugin:  plugin,
+	}
 }
 
 // NewChallenge requests a new challenge from the plugin
-func (a *AttestationAdapter) NewChallenge(ctx context.Context, r *Request) (string, error) {
+func (a *attestationAdapter) NewChallenge(ctx context.Context, r *plugin.AttestationRequest) (string, error) {
 	requestID := requestid.FromContext(ctx)
 	logger := a.logger.With("request_id", requestID)
 	logger.Debug("requesting new challenge")
@@ -62,7 +63,7 @@ func (a *AttestationAdapter) NewChallenge(ctx context.Context, r *Request) (stri
 }
 
 // Verify performs attestation verification
-func (a *AttestationAdapter) Verify(ctx context.Context, r *Request) error {
+func (a *attestationAdapter) Verify(ctx context.Context, r *plugin.AttestationRequest) error {
 	requestID := requestid.FromContext(ctx)
 	logger := a.logger.With("request_id", requestID)
 	logger.Debug("starting attestation verification")

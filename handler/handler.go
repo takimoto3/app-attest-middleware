@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/takimoto3/app-attest-middleware/adapter"
+	"github.com/takimoto3/app-attest-middleware/plugin"
 	"github.com/takimoto3/app-attest-middleware/requestid"
 )
 
@@ -32,24 +34,24 @@ type NewChallengeHooks struct {
 // VerifyHooks and NewChallengeHooks allow customizing success, failure, and pre-processing behavior.
 type AppAttestHandler struct {
 	logger  *slog.Logger
-	adapter Adapter
+	adapter adapter.AttestationAdapter
 	VerifyHooks
 	NewChallengeHooks
 }
 
 // NewAppAttestHandler creates a default AppAttestHandler.
 // Default Failed hooks are just examples and can be overridden.
-func NewAppAttestHandler(logger *slog.Logger, adapter Adapter) *AppAttestHandler {
+func NewAppAttestHandler(logger *slog.Logger, attestAdapter adapter.AttestationAdapter) *AppAttestHandler {
 	return &AppAttestHandler{
 		logger:  logger,
-		adapter: adapter,
+		adapter: attestAdapter,
 		VerifyHooks: VerifyHooks{
 			Setup: func(r *http.Request) {},
 			Success: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			},
 			Failed: func(w http.ResponseWriter, r *http.Request, err error) {
-				if errors.Is(err, ErrBadRequest) {
+				if errors.Is(err, adapter.ErrBadRequest) {
 					http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 					return
 				}
@@ -64,7 +66,7 @@ func NewAppAttestHandler(logger *slog.Logger, adapter Adapter) *AppAttestHandler
 				w.Write([]byte(challenge))
 			},
 			Failed: func(w http.ResponseWriter, r *http.Request, err error) {
-				if errors.Is(err, ErrBadRequest) {
+				if errors.Is(err, adapter.ErrBadRequest) {
 					http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 					return
 				}
@@ -83,9 +85,9 @@ func (h *AppAttestHandler) Verify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.VerifyHooks.Setup(r)
-	err = h.adapter.Verify(r.Context(), &Request{Request: r})
+	err = h.adapter.Verify(r.Context(), &plugin.AttestationRequest{Request: r})
 	if err != nil {
-		if errors.Is(err, ErrNewChallenge) {
+		if errors.Is(err, adapter.ErrNewChallenge) {
 			h.NewChallenge(w, r)
 			return
 		}
@@ -107,7 +109,7 @@ func (h *AppAttestHandler) NewChallenge(w http.ResponseWriter, r *http.Request) 
 	}
 
 	h.NewChallengeHooks.Setup(r)
-	challenge, err := h.adapter.NewChallenge(r.Context(), &Request{Request: r})
+	challenge, err := h.adapter.NewChallenge(r.Context(), &plugin.AttestationRequest{Request: r})
 	if err != nil {
 		logger.Error("new challenge failed", "err", err)
 		h.NewChallengeHooks.Failed(w, r, err)

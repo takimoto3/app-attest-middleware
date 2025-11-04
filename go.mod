@@ -1,8 +1,9 @@
 module github.com/takimoto3/app-attest-middleware
 
-go 1.16
+go 1.24.9
 
 require (
-	github.com/takimoto3/app-attest v0.0.0-20220805182029-325e905f0e86
-	golang.org/x/crypto v0.0.0-20220722155217-630584e8d5aa // indirect
+	github.com/google/uuid v1.6.0
+	github.com/sony/sonyflake/v2 v2.2.0
+	github.com/takimoto3/app-attest v1.0.0
 )

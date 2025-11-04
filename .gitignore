@@ -17,3 +17,4 @@
 testdata/attestdata.json
 testdata/attestdata_expired.json
 certs/Apple_App_Attestation_Root_CA.pem
+.DS_Store

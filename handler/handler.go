@@ -1,72 +1,129 @@
 package handler
 
 import (
+	"errors"
+	"log/slog"
 	"net/http"
 
-	attest "github.com/takimoto3/app-attest"
-	"github.com/takimoto3/app-attest-middleware/logger"
+	"github.com/takimoto3/app-attest-middleware/adapter"
+	"github.com/takimoto3/app-attest-middleware/plugin"
+	"github.com/takimoto3/app-attest-middleware/requestid"
 )
 
-// AttestationService defines the interface for verifying an App Attest
-// attestation object and returning a verification result.
-type AttestationService interface {
-	Verify(attestObj *attest.AttestationObject, clientDataHash, keyID []byte) (*attest.Result, error)
+// VerifyHooks defines hooks for the Verify handler.
+// Setup: pre-processing (cannot write to response)
+// Success: called on successful verification
+// Failed: called on failure (default implementation is just an example and can be overridden)
+type VerifyHooks struct {
+	Setup   func(r *http.Request)
+	Success func(w http.ResponseWriter, r *http.Request)
+	Failed  func(w http.ResponseWriter, r *http.Request, err error)
 }
 
-// AttestationHandler provides HTTP endpoints for handling App Attest
-// attestation flow including challenge issuance and verification.
-type AttestationHandler struct {
-	logger.Logger
-	AttestationService
-	AttestationPlugin
+// NewChallengeHooks defines hooks for the NewChallenge handler.
+// Setup: pre-processing (cannot write to response)
+// Success: called on successful challenge creation
+// Failed: called on failure (default implementation is just an example and can be overridden)
+type NewChallengeHooks struct {
+	Setup   func(r *http.Request)
+	Success func(w http.ResponseWriter, r *http.Request, challenge string)
+	Failed  func(w http.ResponseWriter, r *http.Request, err error)
 }
 
-// NewChallenge issues a new attestation challenge to the client.
-func (h *AttestationHandler) NewChallenge(w http.ResponseWriter, r *http.Request) {
-	h.Logger.SetContext(r.Context())
-	if err := h.ResponseNewChallenge(w, r); err != nil {
-		h.Logger.Errorf("%s", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+// AppAttestHandler is an HTTP handler for App Attest verification.
+// VerifyHooks and NewChallengeHooks allow customizing success, failure, and pre-processing behavior.
+type AppAttestHandler struct {
+	logger  *slog.Logger
+	adapter adapter.AttestationAdapter
+	VerifyHooks
+	NewChallengeHooks
+}
+
+// NewAppAttestHandler creates a default AppAttestHandler.
+// Default Failed hooks are just examples and can be overridden.
+func NewAppAttestHandler(logger *slog.Logger, attestAdapter adapter.AttestationAdapter) *AppAttestHandler {
+	return &AppAttestHandler{
+		logger:  logger,
+		adapter: attestAdapter,
+		VerifyHooks: VerifyHooks{
+			Setup: func(r *http.Request) {},
+			Success: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			},
+			Failed: func(w http.ResponseWriter, r *http.Request, err error) {
+				if errors.Is(err, adapter.ErrBadRequest) {
+					http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+					return
+				}
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			},
+		},
+		NewChallengeHooks: NewChallengeHooks{
+			Setup: func(r *http.Request) {},
+			Success: func(w http.ResponseWriter, r *http.Request, challenge string) {
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(challenge))
+			},
+			Failed: func(w http.ResponseWriter, r *http.Request, err error) {
+				if errors.Is(err, adapter.ErrBadRequest) {
+					http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+					return
+				}
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			},
+		},
 	}
 }
 
-// VerifyAttestation verifies the attestation object received from the client.
-// If verification succeeds, the result is persisted using the plugin.
-func (h *AttestationHandler) VerifyAttestation(w http.ResponseWriter, r *http.Request) {
-	h.Logger.SetContext(r.Context())
-	req, attestObj, clientDataHash, keyID, err := h.ParseRequest(r)
+func (h *AppAttestHandler) Verify(w http.ResponseWriter, r *http.Request) {
+	r, logger, err := h.getLogger(r)
 	if err != nil {
-		h.Logger.Errorf("%s", err)
-		w.WriteHeader(http.StatusBadRequest)
+		h.logger.Error("failed to generate request ID", "err", err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
-	assignedChallenge, err := h.GetAssignedChallenge(req)
+	h.VerifyHooks.Setup(r)
+	err = h.adapter.Verify(r.Context(), &plugin.AttestationRequest{Request: r})
 	if err != nil {
-		h.Logger.Errorf("%s", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	if assignedChallenge == "" {
-		if err = h.ResponseNewChallenge(w, req); err != nil {
-			h.Logger.Errorf("%s", err)
-			w.WriteHeader(http.StatusInternalServerError)
+		if errors.Is(err, adapter.ErrNewChallenge) {
+			h.NewChallenge(w, r)
 			return
 		}
+		logger.Error("verification failed", "err", err)
+		h.VerifyHooks.Failed(w, r, err)
 		return
 	}
 
-	result, err := h.AttestationService.Verify(attestObj, clientDataHash, keyID)
+	logger.Info("verification succeeded")
+	h.VerifyHooks.Success(w, r)
+}
+
+func (h *AppAttestHandler) NewChallenge(w http.ResponseWriter, r *http.Request) {
+	r, logger, err := h.getLogger(r)
 	if err != nil {
-		h.Logger.Errorf("%s", err)
-		w.WriteHeader(http.StatusBadRequest)
+		h.logger.Error("failed to generate request ID", "err", err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
-	if err = h.StoreResult(req, result); err != nil {
-		h.Logger.Errorf("%s", err)
-		w.WriteHeader(http.StatusInternalServerError)
+	h.NewChallengeHooks.Setup(r)
+	challenge, err := h.adapter.NewChallenge(r.Context(), &plugin.AttestationRequest{Request: r})
+	if err != nil {
+		logger.Error("new challenge failed", "err", err)
+		h.NewChallengeHooks.Failed(w, r, err)
 		return
 	}
+
+	logger.Info("new challenge succeeded")
+	h.NewChallengeHooks.Success(w, r, challenge)
+}
+
+func (h *AppAttestHandler) getLogger(r *http.Request) (*http.Request, *slog.Logger, error) {
+	r, requestID, err := requestid.EnsureRequest(r)
+	if err != nil {
+		return r, nil, err
+	}
+	return r, h.logger.With("request_id", requestID), nil
 }

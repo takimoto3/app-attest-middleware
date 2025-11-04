@@ -15,14 +15,18 @@ reducing the risk of spoofed or tampered clients.
 ## Installation
 
 ```sh
+
 go get github.com/takimoto3/app-attest-middleware@latest
+
 ```
+
+
 
 ## Features
 
 -   **HTTP Handlers for Attestation**: Provides handlers for the App Attest attestation flow (challenge and verification).
 -   **HTTP Middleware for Assertion**: Provides middleware for verifying App Attest assertions on incoming requests.
--   **Extensible Plugin System**: Customize the behavior of the middleware by implementing `AdapterPlugin` interfaces for both attestation and assertion.
+-   **Extensible Plugin System**: Customize the behavior of the middleware by implementing `plugin.AttestationPlugin` and `plugin.AssertionPlugin` interfaces.
 -   **Structured Logging with Request ID**: Uses the standard `slog` library for structured, context-aware logging. It automatically injects a request ID (from the `x-request-id` header or a newly generated one) into the context for improved traceability across requests.
 
 ## Overview
@@ -57,11 +61,26 @@ The overall architecture is as follows:
 
 -   **Handler**: Configurable with any HTTP router (e.g., `http.ServeMux`) to handle attestation endpoints such as `/attest/challenge` and `/attest/verify`.
 -   **Middleware**: Wraps existing handlers to verify assertions before request handling.
--   **Adapter/Plugin**: Abstract the business logic and data persistence, allowing you to customize the behavior.
+-   **Adapter**: Acts as a bridge between the HTTP layer and the App Attest verification logic. It coordinates data flow and error handling, delegating specific tasks to the Plugin.
 
-## Initialization (shared by Handler and Middleware)
+-   **Plugin**: Defines user-implemented interfaces for integrating custom business logic, such as challenge storage, device binding, or database operations.
+-   **Adapter/Plugin**: Abstract the business logic and data persistence, allowing you to customize the behavior. These are now located in the `adapter` and `plugin` packages respectively.
+
+## Usage Overview
+
+This library provides a flexible framework for integrating Apple's App Attest. Here's a general flow for using it:
+
+-   **Implement Plugins**: Define your application-specific logic by implementing `plugin.AttestationPlugin` and `plugin.AssertionPlugin` interfaces.
+-   **Create Adapters**: Instantiate `adapter.AttestationAdapter` and `adapter.AssertionAdapter` with your implemented plugins.
+-   **Initialize Request ID**: Configure the global request ID generator (e.g., Sonyflake or UUID).
+-   **Setup Handlers or Middleware**: Use `handler.NewAppAttestHandler` for attestation endpoints and `middleware.NewAssertionMiddleware` for protecting your API endpoints.
 
 **Important**: Before using the handler or middleware, you must initialize the request ID generator. This is a common step for both components. If the `x-request-id` header is missing, a new one will be generated automatically.
+
+**Logging**: This library uses `slog` for structured logging. You can initialize a logger like this:
+```go
+logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+```
 
 ### Using `sonyflake`
 
@@ -70,46 +89,76 @@ To use `sonyflake` for ID generation, you must initialize it at the beginning of
 ```go
 import "github.com/takimoto3/app-attest-middleware/requestid"
 import "github.com/sony/sonyflake/v2"
+import "log/slog"
+import "os"
 
 func main() {
+    logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
     requestid.UseSnowFlake(sonyflake.Settings{})
     // ... rest of your main function
 }
 ```
+
 ### Using UUID (v4 or v6)
 
 You can use UUIDs as request IDs.  
 Version 4 (random) is used by default, or you can use version 6 for time-ordered IDs.
 
 ```go
+
 import "github.com/takimoto3/app-attest-middleware/requestid"
 
+
+
 func main() {
+
     requestid.UseUUID()   // Default: UUIDv4 (random)
+
     // or
+
     requestid.UseUUIDv6() // UUIDv6 (time-ordered)
+
 }
+
 ```
+
+
 
 ### Using a Custom Request ID Generator
 
 You can also provide your own implementation of the `Generator` interface:
 
 ```go
+
 import "github.com/takimoto3/app-attest-middleware/requestid"
+
+
 
 type MyCustomGenerator struct{}
 
+
+
 func (g *MyCustomGenerator) NextID() (string, error) {
+
     // Implement your custom ID generation logic here
+
     return "my-custom-id", nil
+
 }
 
+
+
 func main() {
+
     requestid.UseGenerator(&MyCustomGenerator{})
+
     // ... rest of your main function
+
 }
+
 ```
+
+
 
 ## Handler Usage
 
@@ -129,13 +178,13 @@ requestid.UseSnowFlake(sonyflake.Settings{})
 pool, _ := certs.LoadCertFiles("certs/Apple_App_Attestation_Root_CA.pem")
 attestationService := attest.NewAttestationService(pool, "<TEAM ID>.<BUNDLE ID>")
 
-// 2. Implement the handler.AdapterPlugin interface
+// 2. Implement the plugin.AttestationPlugin interface
 type MyAttestationPlugin struct{}
 // ... implementation of the plugin methods ...
 
-// 3. Create the handler Adapter
+// 3. Create the adapter.AttestationAdapter
 attestationPlugin := &MyAttestationPlugin{}
-attestationAdapter := handler.NewAttestationAdapter(logger, attestationService, attestationPlugin)
+attestationAdapter := adapter.NewAttestationAdapter(logger, attestationService, attestationPlugin)
 
 // 4. Create the AppAttestHandler
 attestHandler := handler.NewAppAttestHandler(logger, attestationAdapter)
@@ -177,6 +226,7 @@ attestHandler.NewChallengeHooks.Success = func(w http.ResponseWriter, r *http.Re
     json.NewEncoder(w).Encode(map[string]string{"challenge": challenge})
 }
 ```
+
 ### Endpoints Summary
 
 -   **Attestation Verification**: The `attestHandler.Verify` method can be registered to any desired endpoint.
@@ -188,8 +238,6 @@ Example route registration:
 mux.HandleFunc("/attest/verify", attestHandler.Verify)
 mux.HandleFunc("/attest/challenge", attestHandler.NewChallenge)
 ```
-These paths are only examples — you can freely configure them in your router or application settings.
-
 
 ## Middleware Usage
 
@@ -207,7 +255,7 @@ type Config struct {
 }
 ```
 
--   **`BodyLimit`**: Sets the maximum allowed size for the request body in bytes. Requests with bodies exceeding this limit will be rejected with a `400 Bad Request`. If not explicitly set, it defaults to 10MB.
+-   **`BodyLimit`**: Sets the maximum allowed size for the request body in bytes. Requests with bodies exceeding this limit will be rejected with a error. If not explicitly set, it defaults to 10MB.
 -   **`AttestationURL`**: The URL where the client should be redirected if the App Attest attestation is required (i.e., the client has not yet attested or their attestation is invalid).
 -   **`NewChallengeURL`**: The URL where the client should be redirected if a new assertion challenge is needed. If this is empty, the middleware will attempt to use the `Referer` header, or default to `/`.
 
@@ -219,17 +267,19 @@ Similar to the handler, you create an `AssertionMiddleware` with an `Adapter` an
 // main.go
 
 import "github.com/takimoto3/app-attest-middleware/middleware"
+import "github.com/takimoto3/app-attest-middleware/adapter"
+import "github.com/takimoto3/app-attest-middleware/plugin"
 
 // Initialization
 requestid.UseSnowFlake(sonyflake.Settings{})
 
-// 1. Implement the middleware.AdapterPlugin interface
+// 1. Implement the plugin.AssertionPlugin interface
 type MyAssertionPlugin struct{}
 // ... implementation of the plugin methods ...
 
-// 2. Create the Middleware Adapter
+// 2. Create the adapter.AssertionAdapter
 assertionPlugin := &MyAssertionPlugin{}
-assertionAdapter := middleware.NewAssertionAdapter(logger, "<TEAM ID>.<BUNDLE ID>", assertionPlugin)
+assertionAdapter := adapter.NewAssertionAdapter(logger, "<TEAM ID>.<BUNDLE ID>", assertionPlugin)
 
 // 3. Create the AssertionMiddleware
 assertionMiddleware := middleware.NewAssertionMiddleware(
@@ -260,6 +310,8 @@ mux.Handle("/hello", assertionMiddleware.Use(helloHandler))
 
 - [Establishing your app’s integrity (Apple Developer Documentation)](https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity)
 - [Validating apps that connect to your server (Apple Developer Documentation)](https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server)
+
+This library provides a production-ready server-side framework to integrate those Apple App Attest guidelines into Go applications.
 
 ## License
 
